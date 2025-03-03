@@ -41,3 +41,7 @@ print(translate("aheprariyo"))
 ```
 
 Este modelo foi projetado para funcionar totalmente offline, sem necessidade de conexão à internet.
+
+## 🌐 Resources
+
+- [Hugging Face Model](https://huggingface.co/renanserrano/yanomami-finetuning)

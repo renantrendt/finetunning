@@ -16,3 +16,8 @@ hɨɨkɨrɨ
 ɨpɨtɨawɨ
 pehihiprɨ
 pehihiyu
+
+# Phrases with the special character ɨ (U+0268)
+kamiyë ɨkɨ-
+ɨkɨ-
+ɨkɨ mai

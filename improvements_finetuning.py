@@ -105,28 +105,37 @@ def prepare_data_for_training(examples):
     processed_data = []
     for example in examples:
         # Check example structure
-        if 'messages' in example:
-            english_text = None
-            yanomami_text = None
+        if 'messages' in example and len(example['messages']) >= 2:
+            user_message = example['messages'][0]
+            assistant_message = example['messages'][1]
             
-            for message in example['messages']:
-                if message['role'] == 'user' and 'content' in message:
-                    english_text = message['content']
-                elif message['role'] == 'assistant' and 'content' in message:
-                    yanomami_text = message['content']
-            
-            if english_text and yanomami_text:
-                processed_data.append({"english": english_text, "yanomami": yanomami_text})
+            if user_message['role'] == 'user' and assistant_message['role'] == 'assistant':
+                input_text = user_message['content']
+                output_text = assistant_message['content']
+                
+                # Determine if this is English-to-Yanomami or Yanomami-to-English
+                if 'translate' in input_text.lower() and 'yanomami' in input_text.lower():
+                    # This is English-to-Yanomami
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
+                elif 'translate' in input_text.lower() and 'english' in input_text.lower():
+                    # This is Yanomami-to-English
+                    processed_data.append({"input": f"Yanomami: {input_text} => English:", "output": output_text})
+                elif 'mean' in input_text.lower() and 'yanomami' in input_text.lower():
+                    # This is a definition query
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
+                else:
+                    # Default case - assume English-to-Yanomami
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
     
     return processed_data
 
 def tokenize_function(examples, tokenizer, config):
     # Initialize lists to store processed data
-    english_texts = examples['english']
-    yanomami_texts = examples['yanomami']
+    input_texts = examples['input']
+    output_texts = examples['output']
     
-    # Combine texts for tokenization with special tokens to help model distinguish languages
-    combined_texts = [f"English: {eng} => Yanomami: {yan}" for eng, yan in zip(english_texts, yanomami_texts)]
+    # For training, we need both input and output together
+    combined_texts = [f"{input_text} {output_text}" for input_text, output_text in zip(input_texts, output_texts)]
     
     # Return empty dict if no texts to process
     if not combined_texts:
@@ -221,9 +230,15 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     """
     # Add appropriate prefix based on translation direction
     if prefix_type == "english_to_yanomami":
-        prompt = f"English: {text} => Yanomami:"
+        if "translate" in text.lower():
+            prompt = f"English: {text} => Yanomami:"
+        else:
+            prompt = f"English: Translate this to Yanomami: {text} => Yanomami:"
     else:
-        prompt = f"Yanomami: {text} => English:"
+        if "translate" in text.lower():
+            prompt = f"Yanomami: {text} => English:"
+        else:
+            prompt = f"Yanomami: Translate this to English: {text} => English:"
     
     # Tokenize input
     inputs = tokenizer(prompt, return_tensors="pt")
@@ -582,8 +597,14 @@ def test_translations(model, tokenizer, config):
     test_phrases = [
         ("What does 'aheprariyo' mean in Yanomami?", "english_to_yanomami"),
         ("Hello, how are you?", "english_to_yanomami"),
+        ("I am learning Yanomami", "english_to_yanomami"),
+        ("What is your name?", "english_to_yanomami"),
+        ("Thank you for your help", "english_to_yanomami"),
         ("aheprariyo", "yanomami_to_english"),
-        ("Kami yanomae thë ã", "yanomami_to_english")
+        ("Kami yanomae thë ã", "yanomami_to_english"),
+        ("thë aheai", "yanomami_to_english"),
+        ("Weti tha?", "yanomami_to_english"),
+        ("Kami yai huë", "yanomami_to_english")
     ]
     
     for phrase, direction in test_phrases:

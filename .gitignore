@@ -37,8 +37,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-.notes
-.notes2
+.notes-dataset
+.notes-fine-tuning
 .questions
 
 # OS specific

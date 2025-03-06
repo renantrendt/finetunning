@@ -37,6 +37,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+/deprecated_scripts
+/notes
+
+
 
 # OS specific
 .DS_Store

@@ -56,7 +56,13 @@ class TranslatorConfig:
         
         # Data settings
         if self.is_lambda:
-            self.dataset_path = os.environ.get("YANOMAMI_DATASET_DIR", "/lambda_storage/yanomami_dataset/")
+            # Use the current directory structure
+            current_dir = os.getcwd()
+            self.dataset_path = os.environ.get("YANOMAMI_DATASET_DIR", os.path.join(current_dir, "yanomami_dataset"))
+            # Ensure path ends with a slash
+            if not self.dataset_path.endswith('/'):
+                self.dataset_path += '/'
+            logger.info(f"Using dataset path: {self.dataset_path}")
         else:
             self.dataset_path = '/Users/renanserrano/CascadeProjects/Yanomami/finetunning/yanomami_dataset/'
         
@@ -66,10 +72,18 @@ class TranslatorConfig:
         self.model_name = "gpt2"
         
         if self.is_lambda:
-            self.model_output_dir = os.environ.get("YANOMAMI_MODEL_OUTPUT_DIR", "/lambda_storage/enhanced_yanomami_translator")
-            self.checkpoint_dir = os.environ.get("YANOMAMI_CHECKPOINT_DIR", "/lambda_storage/checkpoints")
-            self.log_dir = os.environ.get("YANOMAMI_LOG_DIR", "/lambda_storage/logs")
-            self.visualization_output_dir = os.environ.get("YANOMAMI_VISUALIZATION_DIR", "/lambda_storage/visualization_results")
+            # Use the current directory structure for all paths
+            current_dir = os.getcwd()
+            self.model_output_dir = os.environ.get("YANOMAMI_MODEL_OUTPUT_DIR", os.path.join(current_dir, "enhanced_yanomami_translator"))
+            self.checkpoint_dir = os.environ.get("YANOMAMI_CHECKPOINT_DIR", os.path.join(current_dir, "checkpoints"))
+            self.log_dir = os.environ.get("YANOMAMI_LOG_DIR", os.path.join(current_dir, "logs"))
+            self.visualization_output_dir = os.environ.get("YANOMAMI_VISUALIZATION_DIR", os.path.join(current_dir, "visualization_results"))
+            
+            # Log the paths being used
+            logger.info(f"Using model output directory: {self.model_output_dir}")
+            logger.info(f"Using checkpoint directory: {self.checkpoint_dir}")
+            logger.info(f"Using log directory: {self.log_dir}")
+            logger.info(f"Using visualization directory: {self.visualization_output_dir}")
         else:
             self.model_output_dir = "./enhanced_yanomami_translator"
             self.checkpoint_dir = "./checkpoints"
@@ -219,9 +233,10 @@ def main():
     else:
         logger.info(f"Running on CPU only")
     
-    # Import the original main function and call it with our config
+    # Import the original main function and call it
     from yanomami_trainer.improvements_finetuning import main as original_main
-    original_main(config=config)
+    # The original main function doesn't accept a config parameter, it creates its own config
+    original_main()
 
 # If this script is run directly, call the main function
 if __name__ == "__main__":

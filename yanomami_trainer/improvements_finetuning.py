@@ -101,16 +101,43 @@ logger.info(f"{'='*85}\n")
 class TranslatorConfig:
     def __init__(self):
         # Debug mode for testing
-        self.debug_mode = True  # Set to True for verbose output
+        self.debug_mode = os.environ.get("YANOMAMI_DEBUG", "0") == "1"
         
         # Data settings
-        self.dataset_path = '/Users/renanserrano/CascadeProjects/Yanomami/finetunning/yanomami_dataset/'
+        # Check if running on Lambda Cloud
+        self.is_lambda = os.environ.get("YANOMAMI_LAMBDA_TRAINING", "0") == "1"
+        
+        if self.is_lambda:
+            # Use the current directory structure or environment variable
+            current_dir = os.getcwd()
+            self.dataset_path = os.environ.get("YANOMAMI_DATASET_DIR", os.path.join(current_dir, "yanomami_dataset"))
+            # Ensure path ends with a slash
+            if not self.dataset_path.endswith('/'):
+                self.dataset_path += '/'
+            logging.info(f"Using dataset path: {self.dataset_path}")
+        else:
+            self.dataset_path = '/Users/renanserrano/CascadeProjects/Yanomami/finetunning/yanomami_dataset/'
+            
         self.dataset_files = glob.glob(os.path.join(self.dataset_path, '*.jsonl'))
+        logging.info(f"Found {len(self.dataset_files)} dataset files in {self.dataset_path}")
         
         # Model settings
         self.model_name = "gpt2"
-        self.model_output_dir = "./enhanced_yanomami_translator"
-        self.checkpoint_dir = "./checkpoints"
+        
+        if self.is_lambda:
+            # Use the current directory structure for all paths
+            current_dir = os.getcwd()
+            self.model_output_dir = os.environ.get("YANOMAMI_MODEL_OUTPUT_DIR", os.path.join(current_dir, "enhanced_yanomami_translator"))
+            self.checkpoint_dir = os.environ.get("YANOMAMI_CHECKPOINT_DIR", os.path.join(current_dir, "checkpoints"))
+            self.log_dir = os.environ.get("YANOMAMI_LOG_DIR", os.path.join(current_dir, "logs"))
+            self.visualization_output_dir = os.environ.get("YANOMAMI_VISUALIZATION_DIR", os.path.join(current_dir, "visualization_results"))
+            
+            # Log the paths being used
+            logging.info(f"Using model output directory: {self.model_output_dir}")
+            logging.info(f"Using checkpoint directory: {self.checkpoint_dir}")
+        else:
+            self.model_output_dir = "./enhanced_yanomami_translator"
+            self.checkpoint_dir = "./checkpoints"
         
         # Training hyperparameters
         self.num_epochs = 5

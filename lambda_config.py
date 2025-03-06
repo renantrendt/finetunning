@@ -12,8 +12,8 @@ class LambdaConfig:
         self.instance_type = "gpu_8x_a100"  # 8x A100 (40 GB SXM4) for faster training
         self.region = "us-east-1"  # Region for deployment
         
-        # Storage settings
-        self.storage_dir = "/lambda_storage"  # Lambda persistent storage directory
+        # Storage settings - Use relative paths for better portability
+        self.storage_dir = os.path.abspath(os.path.dirname(__file__))  # Current directory
         self.checkpoint_dir = os.path.join(self.storage_dir, "checkpoints")
         self.model_output_dir = os.path.join(self.storage_dir, "enhanced_yanomami_translator")
         self.log_dir = os.path.join(self.storage_dir, "logs")
@@ -31,10 +31,10 @@ class LambdaConfig:
         self.use_mixed_precision = True  # Enable mixed precision training
         self.distributed_training = True  # Enable distributed training across multiple GPUs
         
-        # Create required directories
-        def ensure_dirs_exist(self):
-            Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-            Path(self.model_output_dir).mkdir(parents=True, exist_ok=True)
-            Path(self.log_dir).mkdir(parents=True, exist_ok=True)
-            Path(self.visualization_output_dir).mkdir(parents=True, exist_ok=True)
-            Path(self.dataset_dir).mkdir(parents=True, exist_ok=True)
+    # Create required directories
+    def ensure_dirs_exist(self):
+        Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.model_output_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.log_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.visualization_output_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.dataset_dir).mkdir(parents=True, exist_ok=True)

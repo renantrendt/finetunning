@@ -28,27 +28,34 @@ A comprehensive offline translation system for the Yanomami language using fine-
 
 ```
 yanomami-finetuning/
-├── gpt2_yanomami_finetuning.py    # Main training script
-├── yanomami_rag_cli.py            # CLI interface for translation with RAG
-├── consulta_modelo.py             # Simple model query script
-├── upload_to_hf.py                # Script to upload model to Hugging Face
-├── upload_config_files.py         # Script to upload config files to Hugging Face
+├── run_local_training.py          # Main script for local training
+├── train_yanomami.py              # Simple training script
+├── yanomami_trainer/              # Training module
+│   ├── improvements_finetuning.py # Core training implementation
+│   └── visualization_utils.py     # Training visualization utilities
+├── yanomami_tokenizer/            # Tokenizer module with special character support
+│   ├── tokenizer_enhancement.py   # Enhanced tokenizer for Yanomami characters
+│   └── special_char_vocabulary.txt # Special character vocabulary
 ├── yanomami_dataset/              # Training data directory
-│   ├── translations.jsonl         # 17,009 examples
-│   ├── yanomami-to-english.jsonl  # 1,822 examples
-│   ├── phrases.jsonl              # 2,322 examples
-│   ├── grammar.jsonl              # 200 examples
-│   ├── comparison.jsonl           # 2,072 examples
-│   └── how-to.jsonl               # 5,586 examples
-└── gpt2_yanomami_translator/      # Trained model directory
+│   ├── combined-ok-translations.jsonl  # Basic translations
+│   ├── grammar-plural.jsonl       # Grammar examples for plurals
+│   ├── grammar-verb.jsonl         # Grammar examples for verbs
+│   ├── combined-ok-phrases-*.jsonl # Phrase examples
+│   └── combined-ok-how-to-*.jsonl  # How-to examples
+├── checkpoints/                   # Model checkpoints during training
+├── enhanced_yanomami_translator/  # Final trained model output
+├── logs/                          # Training logs
+├── visualization_results/         # Training visualizations
+└── deprecated_scripts/           # Deprecated Lambda Cloud scripts
 ```
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
-- Python 3.11 or higher
-- PyTorch
+- Python 3.10 or higher
+- PyTorch 2.0 or higher
+- Transformers 4.30 or higher
 - Transformers
 - huggingface_hub (for model upload/download)
 
@@ -74,24 +81,72 @@ yanomami-finetuning/
    model = GPT2LMHeadModel.from_pretrained(model_name)
    
    # Save locally if needed
-   tokenizer.save_pretrained("./gpt2_yanomami_translator")
-   model.save_pretrained("./gpt2_yanomami_translator")
+   tokenizer.save_pretrained("./enhanced_yanomami_translator")
+   model.save_pretrained("./enhanced_yanomami_translator")
    ```
+
+### Training the Model Locally
+
+To train the model on your local machine:
+
+```bash
+# Run the local training script
+python run_local_training.py
+
+# Options for training
+python run_local_training.py --batch-size 8 --mixed-precision --epochs 10
+
+# Resume training from a checkpoint
+python run_local_training.py --resume
+
+# Enable debug mode for verbose output
+python run_local_training.py --debug
+```
+
+The training process uses a multi-phase approach:
+
+1. **Phase 1**: Basic vocabulary training using combined translations
+2. **Phase 2**: Grammar and structure training focusing on plurals and verbs
+3. **Phase 3**: Advanced phrases and usage examples
 
 ### Usage
 
-#### Command-Line Interface
+#### Using the Trained Model
 
-Run the CLI interface:
+After training or downloading the model, you can use it for translation:
 
-```bash
-python yanomami_rag_cli.py
+```python
+from yanomami_trainer.improvements_finetuning import load_yanomami_translator, generate_translation
+
+# Load the model
+model_path = "./enhanced_yanomami_translator"
+model, tokenizer = load_yanomami_translator(model_path)
+
+# Translate from English to Yanomami
+english_text = "Hello, how are you?"
+yanomami_translation = generate_translation(english_text, model, tokenizer, None, "english_to_yanomami")
+print(yanomami_translation)
+
+# Translate from Yanomami to English
+yanomami_text = "Aheprariyo"
+english_translation = generate_translation(yanomami_text, model, tokenizer, None, "yanomami_to_english")
+print(english_translation)
 ```
 
-Follow the on-screen prompts to:
-1. Translate from English to Yanomami
-2. Translate from Yanomami to English
-3. Get comprehensive information about a Yanomami word or phrase
+#### Testing Translations
+
+You can test the model with sample translations:
+
+```python
+from yanomami_trainer.improvements_finetuning import load_yanomami_translator, test_translations
+
+# Load the model
+model_path = "./enhanced_yanomami_translator"
+model, tokenizer = load_yanomami_translator(model_path)
+
+# Run test translations
+results = test_translations(model, tokenizer, None, save_results=True)
+```
 
 #### Direct Translation in Python
 

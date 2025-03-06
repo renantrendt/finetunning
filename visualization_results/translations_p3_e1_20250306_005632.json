@@ -1,0 +1,98 @@
+{
+  "timestamp": "2025-03-06T00:55:50.769702",
+  "phase": 3,
+  "epoch": 1,
+  "batch": null,
+  "translations": [
+    {
+      "input": "Hello",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : Hello Yanomami : I'm sorry, but I'm not sure if you're right. Translation of the the translation of the The translation of The translation of translation:"
+    },
+    {
+      "input": "Good morning",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : Good morning Yanomami : HelloGoodmorning: Good afternoonGood:Goodnoon:GoodmorningGood: Good:GoodMorningGood:Morning:GooddayGoodday:GoodDay:Good:"
+    },
+    {
+      "input": "Thank you",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : Thank you Yanomami : thank you Translation: I'm translating I'm translating Translation: I am translating I am translation Translator: translator translator translation translator translator"
+    },
+    {
+      "input": "My name is John",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : My name is John Yanomami : My family is John My name is My Name is My Family my name is my family I'm my family's"
+    },
+    {
+      "input": "I am learning Yanomami language",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : I am learning  Yanomami  lan gua ge Yanomami : I'm learning Spanish: I've been learning? I'm learning? Translation: You're learning"
+    },
+    {
+      "input": "Where is the nearest village?",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : Where is the nearest village? Yanomami :Where is the closest place to the nearest town? :Where are the nearest places to the city?"
+    },
+    {
+      "input": "Can you help me find water?",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : Can you help me find water? Yanomami : I can help you find water. Money: Money: Money, money, money MoneyMoneyMoneymoneymoneymoneyMoney"
+    },
+    {
+      "input": "The forest is beautiful today",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : The forest is beautiful today Yanomami : () The trees are beautiful The woods are beautiful the trees are are beautiful the trees are very beautifulThe trees"
+    },
+    {
+      "input": "How is the plural of 'grano' formed?",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : How is the plural of ' grano ' formed? Yanomami : The plural: how is Translation from German to . . . The plural of the plural:"
+    },
+    {
+      "input": "What is the past tense of 'to walk'?",
+      "direction": "english_to_yanomami",
+      "output": "Translate from English to  Yanomami : What is the past tense of 'to walk'? Yanomami : To walk. transtranstrans:To. translate:To:Translate Translate:Trans"
+    },
+    {
+      "input": "aheprariyo",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami :  aheprariyo"
+    },
+    {
+      "input": "Weti tha?",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami : Weti  tha ?"
+    },
+    {
+      "input": "Kami yai hu\u00eb",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami : Ka mi yai  hue"
+    },
+    {
+      "input": "Kami yanomae th\u00eb \u00e3",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami : Kami  yano mae the a"
+    },
+    {
+      "input": "th\u00eb aheai",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami : the  aheai"
+    },
+    {
+      "input": "h\u00e3r\u00e3rema",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami :  h\u00e3r\u00e3rema"
+    },
+    {
+      "input": "\u0268h\u0268 heri ka wak\u0268",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami :  \u0268h\u0268   heri   ka   wak\u0268"
+    },
+    {
+      "input": "Yanomam\u0268 th\u00ebp\u00eb \u00e3 totihi",
+      "direction": "yanomami_to_english",
+      "output": "Yanomami :  Yanomami  t hepe  a  totihi"
+    }
+  ]
+}

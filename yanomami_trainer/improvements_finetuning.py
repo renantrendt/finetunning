@@ -14,6 +14,7 @@ import gc
 import shutil
 import importlib.util
 import unicodedata
+import re
 from datetime import datetime
 from transformers import (
     GPT2Tokenizer, 
@@ -139,10 +140,23 @@ class TranslatorConfig:
             self.model_output_dir = "./enhanced_yanomami_translator"
             self.checkpoint_dir = "./checkpoints"
         
-        # Training hyperparameters
+        # Training hyperparameters - Adapt based on available GPU
         self.num_epochs = 5
-        self.batch_size = 4
-        self.gradient_accumulation_steps = 8  # Effective batch size = batch_size * gradient_accumulation_steps
+        # Adjust batch size based on GPU availability
+        if torch.cuda.is_available():
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+            if gpu_mem >= 320:  # 8x A100
+                self.batch_size = 32
+                self.gradient_accumulation_steps = 1
+            elif gpu_mem >= 40:  # 1x A100
+                self.batch_size = 8
+                self.gradient_accumulation_steps = 4
+            else:  # MPS or smaller GPU
+                self.batch_size = 4
+                self.gradient_accumulation_steps = 8
+        else:  # CPU
+            self.batch_size = 2
+            self.gradient_accumulation_steps = 16
         self.learning_rate = 5e-5
         self.warmup_ratio = 0.1
         self.max_grad_norm = 1.0
@@ -231,28 +245,84 @@ def load_jsonl(file_path):
 def prepare_data_for_training(examples):
     processed_data = []
     for example in examples:
-        # Check example structure
-        if 'messages' in example and len(example['messages']) >= 2:
-            user_message = example['messages'][0]
-            assistant_message = example['messages'][1]
+        if 'messages' not in example or len(example['messages']) < 2:
+            continue
             
-            if user_message['role'] == 'user' and assistant_message['role'] == 'assistant':
-                input_text = user_message['content']
-                output_text = assistant_message['content']
-                
-                # Determine if this is English-to-Yanomami or Yanomami-to-English
-                if 'translate' in input_text.lower() and 'yanomami' in input_text.lower():
-                    # This is English-to-Yanomami
-                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
-                elif 'translate' in input_text.lower() and 'english' in input_text.lower():
-                    # This is Yanomami-to-English
-                    processed_data.append({"input": f"Yanomami: {input_text} => English:", "output": output_text})
-                elif 'mean' in input_text.lower() and 'yanomami' in input_text.lower():
-                    # This is a definition query
-                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
-                else:
-                    # Default case - assume English-to-Yanomami
-                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
+        user_message = example['messages'][0]
+        assistant_message = example['messages'][1]
+        
+        if user_message['role'] != 'user' or assistant_message['role'] != 'assistant':
+            continue
+            
+        input_text = user_message['content']
+        output_text = assistant_message['content']
+        
+        # Extract grammar examples
+        if '<EXAMPLE_YANOMAMI>' in output_text or '<EXAMPLE_TRANSLATION>' in output_text:
+            # Extract all example pairs
+            yanomami_examples = re.findall(r'<EXAMPLE_YANOMAMI>(.*?)</EXAMPLE_YANOMAMI>', output_text)
+            translations = re.findall(r'<EXAMPLE_TRANSLATION>(.*?)</EXAMPLE_TRANSLATION>', output_text)
+            
+            # Create translation pairs from examples
+            for yan, trans in zip(yanomami_examples, translations):
+                yan = yan.strip()
+                trans = trans.strip()
+                if not yan or not trans:
+                    continue
+                    
+                # Add both directions
+                processed_data.append({
+                    "input": trans,
+                    "output": yan,
+                    "direction": "english_to_yanomami"
+                })
+                processed_data.append({
+                    "input": yan,
+                    "output": trans,
+                    "direction": "yanomami_to_english"
+                })
+        
+        # Extract word definitions
+        word_matches = re.finditer(r'<WORD>(.*?)</WORD>', output_text)
+        def_matches = re.finditer(r'<DEFINITION>(.*?)</DEFINITION>', output_text)
+        
+        for word_match, def_match in zip(word_matches, def_matches):
+            word = word_match.group(1).strip()
+            definition = def_match.group(1).strip()
+            if word and definition:
+                processed_data.append({
+                    "input": word,
+                    "output": definition,
+                    "direction": "yanomami_to_english"
+                })
+        
+        # Extract direct translations
+        if 'translate' in input_text.lower():
+            # Extract the actual text to translate
+            text_to_translate = re.sub(r'.*?translate\\s+[\"\'](.*?)[\"\'](.*)', r'\1', input_text, flags=re.IGNORECASE)
+            if text_to_translate == input_text:  # If regex didn't match, try another pattern
+                text_to_translate = re.sub(r'.*?translate\\s+(.+?)(?:\\s+to\\s+|\\s+into\\s+|\\s+in\\s+|$)', r'\1', input_text, flags=re.IGNORECASE)
+            
+            # Clean and extract the translation
+            translation = re.sub(r'.*?:\\s*(.+?)(?:\\s*$|\\s*Translation:|\\s*Example:)', r'\1', output_text)
+            
+            # Clean both text and translation
+            text_to_translate = text_to_translate.strip('.,!? ')
+            translation = translation.strip('.,!? ')
+            
+            if text_to_translate and translation:
+                if 'yanomami' in input_text.lower():
+                    processed_data.append({
+                        "input": text_to_translate,
+                        "output": translation,
+                        "direction": "english_to_yanomami"
+                    })
+                elif 'english' in input_text.lower():
+                    processed_data.append({
+                        "input": text_to_translate,
+                        "output": translation,
+                        "direction": "yanomami_to_english"
+                    })
     
     return processed_data
 
@@ -485,31 +555,47 @@ def clean_translation_output(translation, prefix_type):
     Returns:
         str: Cleaned translation
     """
-    # Extract the actual translation part based on the prompt format
-    if prefix_type == "english_to_yanomami":
-        if "Yanomami:" in translation:
-            translation = translation.split("Yanomami:")[1].strip()
-    else:  # yanomami_to_english
-        if "English:" in translation:
-            translation = translation.split("English:")[1].strip()
-            
-    # Clean up any remaining prompt text or artifacts
-    translation = translation.replace("Translate from English to Yanomami:", "").strip()
-    translation = translation.replace("Translate from Yanomami to English:", "").strip()
-    translation = translation.replace("English:", "").strip()
-    translation = translation.replace("Yanomami:", "").strip()
+    # Remove template text and markers
+    patterns_to_remove = [
+        r'Translate\s+(?:from|to)\s+(?:English|Yanomami)\s+(?:from|to|into|in)\s+(?:English|Yanomami)\s*:?',
+        r'Translation\s*:',
+        r'Yanomami\s*:',
+        r'English\s*:',
+        r'\[.*?\]',     # Remove [text]
+        r'\(.*?\)',     # Remove (text)
+        r'<.*?>',       # Remove <tags>
+        r'\d+\.',       # Remove numbered lists
+        r'\b(?:Example|Translation|Answer)\s*\d*\s*:',  # Remove Example/Translation/Answer labels
+        r'Advertisements',  # Remove advertisement text
+        r'\b(?:to|in|from|into)\s+(?:English|Yanomami)\b',  # Remove directional phrases
+    ]
     
-    # Remove any repetitive patterns that might appear
-    # This helps with the model's tendency to repeat itself
-    lines = translation.split('\n')
-    if len(lines) > 1:
-        # Keep only non-empty, unique lines
-        unique_lines = []
-        for line in lines:
-            line = line.strip()
-            if line and line not in unique_lines:
-                unique_lines.append(line)
-        translation = ' '.join(unique_lines)
+    # Apply all cleanup patterns
+    for pattern in patterns_to_remove:
+        translation = re.sub(pattern, '', translation, flags=re.IGNORECASE)
+    
+    # Handle repetitive text
+    words = translation.split()
+    cleaned_words = []
+    prev_word = None
+    repeat_count = 0
+    
+    for word in words:
+        if word == prev_word:
+            repeat_count += 1
+            if repeat_count > 2:  # Allow at most 2 repetitions
+                continue
+        else:
+            repeat_count = 0
+        cleaned_words.append(word)
+        prev_word = word
+    
+    # Rejoin and clean whitespace
+    translation = ' '.join(cleaned_words)
+    translation = re.sub(r'\s+', ' ', translation)
+    
+    # Remove any remaining punctuation at the start/end
+    translation = translation.strip('.,!? ')
     
     # Ensure proper Unicode normalization
     try:
@@ -1408,15 +1494,15 @@ def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, p
     Returns:
         dict: Evaluation metrics
     """
-    # Path to the hellaswag_evaluation module in the new location
-    hellaswag_path = os.path.join(os.path.dirname(__file__), "hellaswag_test_results")
+    # Path to the hellaswag_evaluation module
+    hellaswag_path = os.path.join(os.path.dirname(__file__), "evaluation")
     
     # Add the hellaswag_path to sys.path if it's not already there
     import sys
     if hellaswag_path not in sys.path:
         sys.path.append(hellaswag_path)
     
-    # Check if hellaswag_evaluation module is available in the new location
+    # Check if hellaswag_evaluation module is available
     hellaswag_file = os.path.join(hellaswag_path, "hellaswag_evaluation.py")
     if not os.path.exists(hellaswag_file):
         logger.warning(f"HellaSwag evaluation module not found at {hellaswag_file}. Skipping evaluation.")

@@ -1,0 +1,234 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Yanomami Translation Model Training Report</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                h1, h2, h3 { color: #2c3e50; }
+                .container { max-width: 1200px; margin: 0 auto; }
+                .metric-box { background-color: #f8f9fa; border-radius: 5px; padding: 15px; margin: 10px 0; }
+                .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
+                .metric-item { background-color: #e9ecef; padding: 10px; border-radius: 5px; }
+                .chart-container { margin: 20px 0; }
+                table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                tr:nth-child(even) { background-color: #f9f9f9; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Yanomami Translation Model Training Report</h1>
+                <p>Generated on: 2025-03-06 00:57:39</p>
+                
+                <div class="metric-box">
+                    <h2>Training Summary</h2>
+                    <div class="metric-grid">
+        
+                        <div class="metric-item">
+                            <h3>Initial Loss</h3>
+                            <p>3.0553</p>
+                        </div>
+                        <div class="metric-item">
+                            <h3>Final Loss</h3>
+                            <p>3.3974</p>
+                        </div>
+                        <div class="metric-item">
+                            <h3>Loss Improvement</h3>
+                            <p>-0.3421 (-11.20%)</p>
+                        </div>
+            
+                    </div>
+                </div>
+        
+                <div class="chart-container">
+                    <h2>Loss and Learning Rate</h2>
+                    <img src="loss_lr_history_20250306_005739.png" alt="Loss and Learning Rate Chart" style="max-width: 100%;">
+                </div>
+            
+                <div class="metric-box">
+                    <h2>Final Evaluation Metrics</h2>
+                    <table>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Value</th>
+                        </tr>
+            
+                        <tr>
+                            <td>Final Training Loss</td>
+                            <td>0.21415630340576172</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Final Validation Loss</td>
+                            <td>9.957187271118164</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Training Time (seconds)</td>
+                            <td>344.55636501312256</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Total Phases</td>
+                            <td>3</td>
+                        </tr>
+                
+                    </table>
+                </div>
+            
+                <div class="metric-box">
+                    <h2>Training History</h2>
+                    <table>
+                        <tr>
+                            <th>Phase</th>
+                            <th>Epoch</th>
+                            <th>Batch</th>
+                            <th>Loss</th>
+                            <th>Learning Rate</th>
+                        </tr>
+            
+                        <tr>
+                            <td>1</td>
+                            <td>1</td>
+                            <td>1</td>
+                            <td>3.055287</td>
+                            <td>0.00000000</td>
+                        </tr>
+                
+                        <tr>
+                            <td>2</td>
+                            <td>1</td>
+                            <td>1</td>
+                            <td>3.397422</td>
+                            <td>0.00000000</td>
+                        </tr>
+                
+                    </table>
+                </div>
+            
+                <div class="metric-box">
+                    <h2>Translation Examples</h2>
+                    <table>
+                        <tr>
+                            <th>Input</th>
+                            <th>Direction</th>
+                            <th>Translation</th>
+                        </tr>
+            
+                        <tr>
+                            <td>Hello</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : Hello Yanomami : hello Translation: HelloTranslation:HelloTranslationTranslationEnglishHello Advertisements</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Good morning</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : Good morning Yanomami : Hello. Goodmorning: Hello, I'm good morning. Good morning: You're good morning! You're good today's good morning</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Thank you</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : Thank you Yanomami : I'm sorry, thank you. Translation of English to Russian to</td>
+                        </tr>
+                
+                        <tr>
+                            <td>My name is John</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : My name is John Yanomami : Your name is your name? Your name is my name My name is yours my name is mine I am mine</td>
+                        </tr>
+                
+                        <tr>
+                            <td>I am learning Yanomami language</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : I am learning  Yanomami  lan gua ge Yanomami : (I am learning) Translation: I'm learning I'm learning</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Where is the nearest village?</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : Where is the nearest village? Yanomami : What is the closest village? Translation: Where are the nearest villages? lance: The nearest village The nearest village:</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Can you help me find water?</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : Can you help me find water? Yanomami : I can help you find water. Water: I'm thirsty. you: You're not thirsty.You're not:</td>
+                        </tr>
+                
+                        <tr>
+                            <td>The forest is beautiful today</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : The forest is beautiful today Yanomami : The woods are beautiful today The trees are beautiful beautiful The forests are beautiful We are beautiful are beautiful wonderful The tree is beautiful beautiful beautiful</td>
+                        </tr>
+                
+                        <tr>
+                            <td>How is the plural of 'grano' formed?</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : How is the plural of ' grano ' formed? Yanomami : The plural of the 'How is the is the' is formed? Translation: How are the plural plural and the</td>
+                        </tr>
+                
+                        <tr>
+                            <td>What is the past tense of 'to walk'?</td>
+                            <td>English → Yanomami</td>
+                            <td>Translate from English to  Yanomami : What is the past tense of 'to walk'? Yanomami : To walk, to walk (1) [1] [2] [3] [4] [5</td>
+                        </tr>
+                
+                        <tr>
+                            <td>aheprariyo</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami :  aheprariyo</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Weti tha?</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami : Weti  tha ?</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Kami yai huë</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami : Ka mi yai  hue</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Kami yanomae thë ã</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami : Kami  yano mae the a</td>
+                        </tr>
+                
+                        <tr>
+                            <td>thë aheai</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami : the  aheai</td>
+                        </tr>
+                
+                        <tr>
+                            <td>hãrãrema</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami :  hãrãrema</td>
+                        </tr>
+                
+                        <tr>
+                            <td>ɨhɨ heri ka wakɨ</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami :  ɨhɨ   heri   ka   wakɨ</td>
+                        </tr>
+                
+                        <tr>
+                            <td>Yanomamɨ thëpë ã totihi</td>
+                            <td>Yanomami → English</td>
+                            <td>Yanomami :  Yanomami  t hepe  a  totihi</td>
+                        </tr>
+                
+                    </table>
+                </div>
+            
+            </div>
+        </body>
+        </html>
+        

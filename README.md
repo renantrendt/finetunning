@@ -28,7 +28,8 @@ A comprehensive offline translation system for the Yanomami language using fine-
 
 ```
 yanomami-finetuning/
-├── train_yanomami_model.py        # Unified training script for local and cloud environments
+├── run_local_training.py          # Main script for local training
+├── train_yanomami.py              # Simple training script
 ├── yanomami_trainer/              # Training module
 │   ├── improvements_finetuning.py # Core training implementation
 │   └── visualization_utils.py     # Training visualization utilities
@@ -84,254 +85,23 @@ yanomami-finetuning/
    model.save_pretrained("./enhanced_yanomami_translator")
    ```
 
-### Training the Model
-
-#### Local Training
+### Training the Model Locally
 
 To train the model on your local machine:
 
 ```bash
 # Run the local training script
-python train_yanomami_model.py
+python run_local_training.py
 
 # Options for training
-python train_yanomami_model.py --batch-size 8 --mixed-precision --epochs 10
+python run_local_training.py --batch-size 8 --mixed-precision --epochs 10
 
 # Resume training from a checkpoint
-python train_yanomami_model.py --resume
+python run_local_training.py --resume
 
 # Enable debug mode for verbose output
-python train_yanomami_model.py --debug
+python run_local_training.py --debug
 ```
-
-#### Lambda Cloud Training
-
-To achieve faster training speeds and better performance, you can train the model on Lambda Cloud GPU instances. The training script automatically detects and configures itself for Lambda Cloud environments.
-
-##### Prerequisites
-
-1. **Lambda Cloud Account**:
-   - Sign up at https://cloud.lambdalabs.com if you don't have an account
-   - Create an API key at https://cloud.lambdalabs.com/api-keys
-   - Set your API key as an environment variable:
-     ```bash
-     export LAMBDA_API_KEY=your_api_key_here
-     ```
-
-2. **Environment Setup**:
-
-   a. **Required Environment Variables**:
-   ```bash
-   # Lambda Cloud API Key
-   export LAMBDA_API_KEY=your_api_key_here
-
-   # Training Configuration (Optional - will use defaults if not set)
-   export YANOMAMI_BATCH_SIZE=32          # Default: Based on GPU
-   export YANOMAMI_GRAD_ACCUM_STEPS=1     # Default: Based on GPU
-   export YANOMAMI_MIXED_PRECISION=1       # Default: 1 (enabled)
-   export YANOMAMI_RESUME_TRAINING=0       # Default: 0 (disabled)
-   export YANOMAMI_DEBUG=0                 # Default: 0 (disabled)
-   ```
-
-   b. **Project Setup on Lambda Instance**:
-   ```bash
-   # Clone the repository
-   git clone https://github.com/renantrendt/yanomami-finetuning.git
-   cd yanomami-finetuning
-
-   # Install dependencies
-   pip install -r requirements.txt
-
-   # Create required directories
-   mkdir -p /yanomami_project/{yanomami_dataset,checkpoints,enhanced_yanomami_translator,logs,visualization_results}
-   ```
-
-   c. **Data Transfer to Lambda Instance**:
-   ```bash
-   # From your local machine, transfer dataset and any existing checkpoints
-   rsync -avz ./yanomami_dataset/ ubuntu@<instance-ip>:/yanomami_project/yanomami_dataset/
-   rsync -avz ./checkpoints/ ubuntu@<instance-ip>:/yanomami_project/checkpoints/  # If resuming training
-   ```
-
-##### Training Options
-
-The script automatically detects the Lambda environment and GPU configuration, optimizing training parameters accordingly:
-
-1. **8x A100 Configuration (Optimal Performance)**:
-   ```bash
-   python train_yanomami_model.py
-   ```
-   - GPU Type: 8x A100 (40GB SXM4)
-   - Batch Size: 32
-   - Gradient Accumulation: Disabled
-   - Mixed Precision: Enabled
-   - Distributed Training: Enabled
-   - Training Epochs: 5
-   - Region: us-east-1
-
-2. **1x A100 Configuration (Fallback Option 1)**:
-   ```bash
-   python train_yanomami_model.py
-   ```
-   - GPU Type: 1x A100
-   - Batch Size: 8
-   - Gradient Accumulation: 4 steps
-   - Mixed Precision: Enabled
-   - Distributed Training: Disabled
-   - Training Epochs: 8
-   - Region: us-east-1
-
-3. **MPS GPU Configuration (Fallback Option 2)**:
-   ```bash
-   python train_yanomami_model.py
-   ```
-   - GPU Type: 1x MPS
-   - Batch Size: 4
-   - Gradient Accumulation: 8 steps
-   - Mixed Precision: Enabled
-   - Distributed Training: Disabled
-   - Training Epochs: 10
-   - Region: us-east-1
-
-The script uses Lambda's official PyTorch image (`lambdal/lambda-stack:latest`) and automatically configures all paths and settings. You don't need to manually specify training parameters as they are optimized based on the detected GPU configuration.
-
-##### Monitoring Training
-
-1. **View Live Training Progress**:
-   ```bash
-   # Attach to the training session
-   tmux attach -t yanomami_training
-   
-   # To detach without stopping: press Ctrl+B, then D
-   ```
-
-2. **Check Training Logs**:
-   ```bash
-   # View latest log file
-   tail -f /yanomami_project/logs/training.log
-   ```
-
-3. **Monitor GPU Usage**:
-   ```bash
-   nvidia-smi -l 1  # Updates every second
-   ```
-
-##### Directory Structure
-
-The training script automatically manages the following directory structure on the Lambda instance:
-
-```
-/yanomami_project/
-├── yanomami_dataset/        # Training dataset files
-│   ├── combined-ok-translations.jsonl
-│   ├── grammar-plural.jsonl
-│   ├── grammar-verb.jsonl
-│   └── combined-ok-phrases-*.jsonl
-├── checkpoints/             # Training checkpoints and state
-├── enhanced_yanomami_translator/  # Final model output
-├── logs/                    # Training logs and metrics
-└── visualization_results/   # Training visualizations
-```
-
-All paths are automatically configured when running on Lambda Cloud. The script detects the environment and adjusts paths accordingly - using `/yanomami_project` on Lambda instances and the local project directory when running locally.
-
-##### Retrieving Results
-
-After training completes, download your results:
-```bash
-# From your local machine
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/enhanced_yanomami_translator/ ./enhanced_yanomami_translator/
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/visualization_results/ ./visualization_results/
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/logs/ ./logs/
-```
-
-##### Cost Management and Instance Selection
-
-1. **Instance Types and Costs**:
-   - **8x A100 Configuration**:
-     * Highest performance but most expensive
-     * Best for large-scale training
-     * Recommended for final model training
-   
-   - **1x A100 Configuration**:
-     * Good balance of cost and performance
-     * Suitable for most training needs
-     * Recommended for development and testing
-   
-   - **MPS GPU Configuration**:
-     * Most cost-effective option
-     * Suitable for debugging and small experiments
-     * Recommended for initial development
-
-2. **Cost Optimization Tips**:
-   - Start development with smaller instances
-   - Use checkpointing to resume training if needed
-   - Monitor training progress to avoid unnecessary runtime
-   - Terminate instances when not in use
-   - Use mixed precision to reduce training time
-
-3. **Instance Management**:
-   ```bash
-   # List running instances and costs
-   lambda instance list
-
-   # Stop an instance (can be restarted)
-   lambda instance stop <instance-id>
-
-   # Terminate an instance (permanent)
-   lambda instance terminate <instance-id>
-   ```
-
-##### Security Best Practices
-
-1. **API Key Management**:
-   - Store API keys in environment variables, never in code
-   - Rotate API keys regularly
-   - Use different API keys for development and production
-
-2. **Access Control**:
-   - Use SSH key-based authentication
-   - Keep your SSH private key secure
-   - Never share instance credentials
-
-3. **Data Security**:
-   - Encrypt sensitive data before transfer
-   - Use secure channels (SSH/SFTP) for data transfer
-   - Regularly backup important data
-   - Clean up sensitive data when terminating instances
-
-4. **Network Security**:
-   - Only expose necessary ports
-   - Use secure protocols for communication
-   - Monitor instance access logs
-
-5. **Instance Hygiene**:
-   - Keep the system updated
-   - Remove unused packages
-   - Monitor system logs for suspicious activity
-   - Terminate instances when not in use
-
-##### Troubleshooting
-
-1. **Out of Memory Errors**:
-   - Reduce batch size
-   - Enable mixed precision training
-   - Increase gradient accumulation steps
-
-2. **Training Not Progressing**:
-   - Check logs in `/yanomami_project/logs/`
-   - Enable debug mode: `python train_yanomami_model.py --debug`
-   - Verify dataset paths
-
-3. **GPU Not Detected**:
-   - Run `nvidia-smi` to check GPU status
-   - Verify CUDA installation
-   - Check GPU drivers
-
-4. **Lambda Cloud Issues**:
-   - Check Lambda Cloud status page
-   - Verify API key and permissions
-   - Ensure sufficient account credits
 
 The training process uses a multi-phase approach:
 

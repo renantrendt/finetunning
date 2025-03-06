@@ -4,6 +4,7 @@
 # with focus on better performance, training efficiency, and offline functionality.
 
 import os
+import re
 import json
 import torch
 import numpy as np
@@ -12,9 +13,9 @@ import psutil
 import platform
 import gc
 import shutil
+import difflib
 import importlib.util
 import unicodedata
-import re
 from datetime import datetime
 from transformers import (
     GPT2Tokenizer, 
@@ -140,23 +141,10 @@ class TranslatorConfig:
             self.model_output_dir = "./enhanced_yanomami_translator"
             self.checkpoint_dir = "./checkpoints"
         
-        # Training hyperparameters - Adapt based on available GPU
+        # Training hyperparameters
         self.num_epochs = 5
-        # Adjust batch size based on GPU availability
-        if torch.cuda.is_available():
-            gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-            if gpu_mem >= 320:  # 8x A100
-                self.batch_size = 32
-                self.gradient_accumulation_steps = 1
-            elif gpu_mem >= 40:  # 1x A100
-                self.batch_size = 8
-                self.gradient_accumulation_steps = 4
-            else:  # MPS or smaller GPU
-                self.batch_size = 4
-                self.gradient_accumulation_steps = 8
-        else:  # CPU
-            self.batch_size = 2
-            self.gradient_accumulation_steps = 16
+        self.batch_size = 4
+        self.gradient_accumulation_steps = 8  # Effective batch size = batch_size * gradient_accumulation_steps
         self.learning_rate = 5e-5
         self.warmup_ratio = 0.1
         self.max_grad_norm = 1.0
@@ -168,15 +156,18 @@ class TranslatorConfig:
         self.padding = "max_length"
         self.truncation = True
         
-        # Generation settings - Optimized to reduce repetition
-        self.max_gen_length = 50  # Reduced from 100 to prevent long repetitive sequences
-        self.temperature = 0.9  # Increased from 0.7 to encourage more diversity
-        self.top_p = 0.92  # Slightly increased for more diversity
-        self.top_k = 40  # Reduced to focus on more likely tokens
-        self.num_beams = 5  # Increased for better search
-        self.do_sample = True
-        self.repetition_penalty = 1.5  # Added to penalize repetition
-        self.no_repeat_ngram_size = 3  # Prevent repeating 3-grams
+        # Generation settings - Optimized for initial outputs with more lenient parameters
+        self.max_gen_length = 128  # Keep max length for comprehensive translations
+        self.min_length = 1  # More lenient minimum length to ensure we get outputs
+        self.temperature = 0.8  # Slightly higher temperature for more variety
+        self.top_p = 0.95  # More lenient nucleus sampling
+        self.top_k = 100  # Broader vocabulary selection
+        self.num_beams = 3  # Reduced beams for faster generation while maintaining quality
+        self.do_sample = True  # Keep sampling enabled
+        self.repetition_penalty = 1.1  # Slightly reduced penalty
+        self.no_repeat_ngram_size = 2  # More lenient repetition control
+        self.length_penalty = 0.8  # Slight preference for shorter outputs initially
+        self.early_stopping = True  # Keep early stopping
         
         # Early stopping
         self.patience = 3
@@ -245,84 +236,28 @@ def load_jsonl(file_path):
 def prepare_data_for_training(examples):
     processed_data = []
     for example in examples:
-        if 'messages' not in example or len(example['messages']) < 2:
-            continue
+        # Check example structure
+        if 'messages' in example and len(example['messages']) >= 2:
+            user_message = example['messages'][0]
+            assistant_message = example['messages'][1]
             
-        user_message = example['messages'][0]
-        assistant_message = example['messages'][1]
-        
-        if user_message['role'] != 'user' or assistant_message['role'] != 'assistant':
-            continue
-            
-        input_text = user_message['content']
-        output_text = assistant_message['content']
-        
-        # Extract grammar examples
-        if '<EXAMPLE_YANOMAMI>' in output_text or '<EXAMPLE_TRANSLATION>' in output_text:
-            # Extract all example pairs
-            yanomami_examples = re.findall(r'<EXAMPLE_YANOMAMI>(.*?)</EXAMPLE_YANOMAMI>', output_text)
-            translations = re.findall(r'<EXAMPLE_TRANSLATION>(.*?)</EXAMPLE_TRANSLATION>', output_text)
-            
-            # Create translation pairs from examples
-            for yan, trans in zip(yanomami_examples, translations):
-                yan = yan.strip()
-                trans = trans.strip()
-                if not yan or not trans:
-                    continue
-                    
-                # Add both directions
-                processed_data.append({
-                    "input": trans,
-                    "output": yan,
-                    "direction": "english_to_yanomami"
-                })
-                processed_data.append({
-                    "input": yan,
-                    "output": trans,
-                    "direction": "yanomami_to_english"
-                })
-        
-        # Extract word definitions
-        word_matches = re.finditer(r'<WORD>(.*?)</WORD>', output_text)
-        def_matches = re.finditer(r'<DEFINITION>(.*?)</DEFINITION>', output_text)
-        
-        for word_match, def_match in zip(word_matches, def_matches):
-            word = word_match.group(1).strip()
-            definition = def_match.group(1).strip()
-            if word and definition:
-                processed_data.append({
-                    "input": word,
-                    "output": definition,
-                    "direction": "yanomami_to_english"
-                })
-        
-        # Extract direct translations
-        if 'translate' in input_text.lower():
-            # Extract the actual text to translate
-            text_to_translate = re.sub(r'.*?translate\\s+[\"\'](.*?)[\"\'](.*)', r'\1', input_text, flags=re.IGNORECASE)
-            if text_to_translate == input_text:  # If regex didn't match, try another pattern
-                text_to_translate = re.sub(r'.*?translate\\s+(.+?)(?:\\s+to\\s+|\\s+into\\s+|\\s+in\\s+|$)', r'\1', input_text, flags=re.IGNORECASE)
-            
-            # Clean and extract the translation
-            translation = re.sub(r'.*?:\\s*(.+?)(?:\\s*$|\\s*Translation:|\\s*Example:)', r'\1', output_text)
-            
-            # Clean both text and translation
-            text_to_translate = text_to_translate.strip('.,!? ')
-            translation = translation.strip('.,!? ')
-            
-            if text_to_translate and translation:
-                if 'yanomami' in input_text.lower():
-                    processed_data.append({
-                        "input": text_to_translate,
-                        "output": translation,
-                        "direction": "english_to_yanomami"
-                    })
-                elif 'english' in input_text.lower():
-                    processed_data.append({
-                        "input": text_to_translate,
-                        "output": translation,
-                        "direction": "yanomami_to_english"
-                    })
+            if user_message['role'] == 'user' and assistant_message['role'] == 'assistant':
+                input_text = user_message['content']
+                output_text = assistant_message['content']
+                
+                # Determine if this is English-to-Yanomami or Yanomami-to-English
+                if 'translate' in input_text.lower() and 'yanomami' in input_text.lower():
+                    # This is English-to-Yanomami
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
+                elif 'translate' in input_text.lower() and 'english' in input_text.lower():
+                    # This is Yanomami-to-English
+                    processed_data.append({"input": f"Yanomami: {input_text} => English:", "output": output_text})
+                elif 'mean' in input_text.lower() and 'yanomami' in input_text.lower():
+                    # This is a definition query
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
+                else:
+                    # Default case - assume English-to-Yanomami
+                    processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
     
     return processed_data
 
@@ -477,13 +412,21 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     except Exception as e:
         logger.warning(f"Error normalizing input text: {str(e)}")
     
-    # Improved prompt engineering with clearer structure and less repetitive patterns
+    # Enhanced prompt engineering with clear structure and context
     if prefix_type == "english_to_yanomami":
-        # Simplified prompt for English to Yanomami translation
-        prompt = f"Translate from English to Yanomami:\n\nEnglish: {text}\n\nYanomami:"
+        prompt = (
+            "You are a Yanomami language translator.\n"
+            "Translate the following English text to Yanomami accurately:\n\n"
+            f"English: {text}\n\n"
+            "Yanomami: "
+        )
     else:
-        # Simplified prompt for Yanomami to English translation
-        prompt = f"Translate from Yanomami to English:\n\nYanomami: {text}\n\nEnglish:"
+        prompt = (
+            "You are a Yanomami language translator.\n"
+            "Translate the following Yanomami text to English accurately:\n\n"
+            f"Yanomami: {text}\n\n"
+            "English: "
+        )
     
     # Tokenize input with enhanced handling for special characters
     try:
@@ -509,21 +452,29 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     inputs = {k: v.to(device) for k, v in inputs.items()}
     model.to(device)
     
-    # Generate translation with improved parameters to reduce repetition
-    outputs = model.generate(
-        **inputs,
-        max_length=config.max_gen_length,
-        num_return_sequences=1,
-        temperature=config.temperature,
-        top_p=config.top_p,
-        top_k=config.top_k,
-        num_beams=config.num_beams,
-        do_sample=config.do_sample,
-        pad_token_id=tokenizer.eos_token_id,
-        repetition_penalty=config.repetition_penalty,  # Penalize repetition
-        no_repeat_ngram_size=config.no_repeat_ngram_size,  # Prevent repeating n-grams
-        early_stopping=True  # Stop when a reasonable output is generated
-    )
+    # Log input state
+    logger.info(f"Input IDs shape: {inputs['input_ids'].shape}")
+    logger.info(f"Input text tokens: {tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])}")
+    
+    # Generate translation with simplified parameters for initial testing
+    try:
+        outputs = model.generate(
+            **inputs,
+            max_length=64,  # Shorter for testing
+            min_length=1,   # Allow any length output
+            num_return_sequences=1,
+            temperature=0.7,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            bos_token_id=tokenizer.bos_token_id
+        )
+        logger.info(f"Generated output shape: {outputs.shape}")
+        logger.info(f"Output tokens: {tokenizer.convert_ids_to_tokens(outputs[0])}")
+    except Exception as e:
+        logger.error(f"Error during generation: {str(e)}")
+        return ""  # Return empty string on error
     
     # Decode and return translation with enhanced handling for special characters
     try:
@@ -546,7 +497,7 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
 
 def clean_translation_output(translation, prefix_type):
     """
-    Clean and extract the relevant part of the translation output.
+    Clean and extract the relevant part of the translation output with enhanced handling.
     
     Args:
         translation (str): Raw translation output from the model
@@ -555,47 +506,88 @@ def clean_translation_output(translation, prefix_type):
     Returns:
         str: Cleaned translation
     """
-    # Remove template text and markers
-    patterns_to_remove = [
-        r'Translate\s+(?:from|to)\s+(?:English|Yanomami)\s+(?:from|to|into|in)\s+(?:English|Yanomami)\s*:?',
-        r'Translation\s*:',
-        r'Yanomami\s*:',
-        r'English\s*:',
-        r'\[.*?\]',     # Remove [text]
-        r'\(.*?\)',     # Remove (text)
-        r'<.*?>',       # Remove <tags>
-        r'\d+\.',       # Remove numbered lists
-        r'\b(?:Example|Translation|Answer)\s*\d*\s*:',  # Remove Example/Translation/Answer labels
-        r'Advertisements',  # Remove advertisement text
-        r'\b(?:to|in|from|into)\s+(?:English|Yanomami)\b',  # Remove directional phrases
-    ]
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting translation cleaning. Raw output:\n{translation}")
     
-    # Apply all cleanup patterns
-    for pattern in patterns_to_remove:
-        translation = re.sub(pattern, '', translation, flags=re.IGNORECASE)
-    
-    # Handle repetitive text
-    words = translation.split()
-    cleaned_words = []
-    prev_word = None
-    repeat_count = 0
-    
-    for word in words:
-        if word == prev_word:
-            repeat_count += 1
-            if repeat_count > 2:  # Allow at most 2 repetitions
-                continue
-        else:
-            repeat_count = 0
-        cleaned_words.append(word)
-        prev_word = word
-    
-    # Rejoin and clean whitespace
-    translation = ' '.join(cleaned_words)
-    translation = re.sub(r'\s+', ' ', translation)
-    
-    # Remove any remaining punctuation at the start/end
-    translation = translation.strip('.,!? ')
+    try:
+        if not translation or translation.isspace():
+            logger.warning("Received empty or whitespace-only translation")
+            return ""
+            
+        # Normalize Unicode characters
+        translation = unicodedata.normalize('NFC', translation)
+        logger.debug(f"After Unicode normalization:\n{translation}")
+        
+        # Remove the context-setting prefix more leniently
+        prefixes_to_remove = [
+            "You are a Yanomami language translator",
+            "Translate the following English text to Yanomami",
+            "Translate the following Yanomami text to English",
+            "accurately",
+            "translation"
+        ]
+        for prefix in prefixes_to_remove:
+            translation = re.sub(f"{prefix}.*?:", "", translation, flags=re.IGNORECASE).strip()
+        
+        logger.debug(f"After removing prefixes:\n{translation}")
+        
+        # Extract the actual translation based on the target language
+        target_marker = "Yanomami:" if prefix_type == "english_to_yanomami" else "English:"
+        if target_marker.lower() in translation.lower():
+            parts = re.split(target_marker, translation, flags=re.IGNORECASE)
+            translation = parts[-1].strip()  # Take the last occurrence
+            logger.debug(f"Found target marker '{target_marker}'. Extracted:\n{translation}")
+        
+        # Clean up any remaining markers and artifacts
+        markers = ["English:", "Yanomami:", "Translation:", "<start>", "<end>", "\n\n", ".:", ":", "\t"]
+        for marker in markers:
+            translation = translation.replace(marker, "").strip()
+        
+        # Remove multiple consecutive spaces and newlines
+        translation = re.sub(r'\s+', ' ', translation).strip()
+        logger.debug(f"After cleaning markers:\n{translation}")
+        
+        # Handle potential repetitions more intelligently
+        if not translation:
+            logger.warning("Translation became empty after cleaning")
+            return ""
+            
+        # Split by common sentence delimiters
+        sentences = re.split(r'[.!?]+', translation)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        if not sentences:
+            logger.warning("No valid sentences found after splitting")
+            return translation.strip()
+            
+        # Remove exact duplicates and near-duplicates
+        unique_sentences = []
+        for sentence in sentences:
+            # Check if this sentence is too similar to any existing one
+            is_duplicate = False
+            for existing in unique_sentences:
+                similarity = difflib.SequenceMatcher(None, sentence.lower(), existing.lower()).ratio()
+                if similarity > 0.8:  # 80% similarity threshold
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_sentences.append(sentence)
+        
+        # Combine sentences
+        final_translation = ' '.join(unique_sentences)
+        logger.info(f"Final cleaned translation:\n{final_translation}")
+        
+        return final_translation
+    except Exception as e:
+        logger.error(f"Error in clean_translation_output: {str(e)}")
+        return translation.strip()  # Return stripped original in case of error
+        # Keep only non-empty, unique lines
+        unique_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and line not in unique_lines:
+                unique_lines.append(line)
+        translation = ' '.join(unique_lines)
     
     # Ensure proper Unicode normalization
     try:
@@ -1494,15 +1486,15 @@ def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, p
     Returns:
         dict: Evaluation metrics
     """
-    # Path to the hellaswag_evaluation module
-    hellaswag_path = os.path.join(os.path.dirname(__file__), "evaluation")
+    # Path to the hellaswag_evaluation module in the new location
+    hellaswag_path = os.path.join(os.path.dirname(__file__), "hellaswag_test_results")
     
     # Add the hellaswag_path to sys.path if it's not already there
     import sys
     if hellaswag_path not in sys.path:
         sys.path.append(hellaswag_path)
     
-    # Check if hellaswag_evaluation module is available
+    # Check if hellaswag_evaluation module is available in the new location
     hellaswag_file = os.path.join(hellaswag_path, "hellaswag_evaluation.py")
     if not os.path.exists(hellaswag_file):
         logger.warning(f"HellaSwag evaluation module not found at {hellaswag_file}. Skipping evaluation.")
@@ -1601,133 +1593,97 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
     Returns:
         dict: Dictionary of test results if save_results is True, None otherwise
     """
-    # Create a descriptive header based on when the test is being run
-    if phase is not None and epoch is not None:
-        if batch is not None:
-            test_header = f"\n===== TESTING TRANSLATIONS (Phase {phase}, Epoch {epoch}, Batch {batch}) ====="
-        else:
-            test_header = f"\n===== TESTING TRANSLATIONS (Phase {phase}, Epoch {epoch}) ====="
-    else:
-        test_header = "\n===== TESTING TRANSLATIONS (Final) ====="
-        
+    logger = logging.getLogger(__name__)
+    
+    # Create a descriptive header
+    test_header = "\n" + "="*50 + "\nTESTING TRANSLATIONS\n" + "="*50
+    if phase is not None:
+        test_header += f"\nPhase: {phase}, Epoch: {epoch}"
     logger.info(test_header)
     
-    # Enhanced test phrases with more diverse examples and special Yanomami characters
-    test_phrases = [
-        # Basic English to Yanomami phrases
-        ("Hello", "english_to_yanomami"),
-        ("Good morning", "english_to_yanomami"),
-        ("Thank you", "english_to_yanomami"),
-        ("My name is John", "english_to_yanomami"),
-        ("I am learning Yanomami language", "english_to_yanomami"),
-        
-        # More complex English phrases
-        ("Where is the nearest village?", "english_to_yanomami"),
-        ("Can you help me find water?", "english_to_yanomami"),
-        ("The forest is beautiful today", "english_to_yanomami"),
-        
-        # Grammar-focused examples
-        ("How is the plural of 'grano' formed?", "english_to_yanomami"),
-        ("What is the past tense of 'to walk'?", "english_to_yanomami"),
-        
-        # Basic Yanomami to English phrases
-        ("aheprariyo", "yanomami_to_english"),
-        ("Weti tha?", "yanomami_to_english"),
-        ("Kami yai huë", "yanomami_to_english"),  # Contains special character ë
-        
-        # Phrases with special characters
-        ("Kami yanomae thë ã", "yanomami_to_english"),  # Contains special characters ë, ã
-        ("thë aheai", "yanomami_to_english"),  # Contains special character ë
-        ("hãrãrema", "yanomami_to_english"),  # Contains multiple special characters ã
-        ("ɨhɨ heri ka wakɨ", "yanomami_to_english"),  # Contains special character ɨ
-        
-        # Sentences with multiple special characters
-        ("Yanomamɨ thëpë ã totihi", "yanomami_to_english")  # Contains ɨ, ë, ã
-    ]
+    # Use a single simple test case for debugging
+    # Use a single test phrase for debugging
+    test_phrase = "Hello"
+    direction = "english_to_yanomami"
     
-    # Ensure all test phrases are properly encoded
-    normalized_test_phrases = []
-    for phrase, direction in test_phrases:
-        try:
-            # Normalize Unicode characters
-            normalized_phrase = unicodedata.normalize('NFC', phrase)
-            normalized_test_phrases.append((normalized_phrase, direction))
-        except Exception as e:
-            logger.warning(f"Error normalizing test phrase '{phrase}': {str(e)}. Using original.")
-            normalized_test_phrases.append((phrase, direction))
+    logger.info("\n" + "="*50)
+    logger.info("STARTING BASIC TRANSLATION TEST")
+    logger.info("="*50)
     
-    test_phrases = normalized_test_phrases
+    # Log model and tokenizer state
+    logger.info(f"Model device: {next(model.parameters()).device}")
+    logger.info(f"Tokenizer vocab size: {len(tokenizer)}")
     
-    # Initialize results dictionary if we're saving results
-    results = {}
-    if save_results:
+    try:
+        # Create the prompt
+        prompt = (
+            "You are a Yanomami language translator.\n"
+            "Translate the following English text to Yanomami accurately:\n\n"
+            f"English: {test_phrase}\n\n"
+            "Yanomami: "
+        )
+        
+        # Log the prompt
+        logger.info(f"\nUsing prompt:\n{prompt}")
+        
+        # Tokenize and log input
+        inputs = tokenizer(prompt, return_tensors="pt")
+        input_tokens = tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
+        logger.info(f"\nInput tokens: {input_tokens}")
+        
+        # Move to device
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Generate with simplified parameters
+        model.eval()
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_length=64,
+                min_length=1,
+                num_return_sequences=1,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+            
+        # Decode and log output
+        output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        logger.info(f"\nRaw output:\n{output_text}")
+        
+        # Clean output
+        translation = clean_translation_output(output_text, direction)
+        logger.info(f"\nCleaned translation:\n{translation}")
+        
+        # Store results
         results = {
             "timestamp": datetime.now().isoformat(),
             "phase": phase,
             "epoch": epoch,
-            "batch": batch,
-            "translations": []
+            "input": test_phrase,
+            "direction": direction,
+            "raw_output": output_text,
+            "cleaned_translation": translation,
+            "model_device": str(device),
+            "tokenizer_size": len(tokenizer)
         }
-    
-    for phrase, direction in test_phrases:
-        try:
-            # Create a clear section header for each test case
-            logger.info(f"\n{'='*60}\n{direction.upper()} TEST CASE\n{'='*60}")
-            
-            # Log the input text with detailed Unicode representation
-            phrase_repr = repr(phrase)
-            logger.info(f"INPUT TEXT: {phrase}")
-            logger.info(f"INPUT UNICODE: {phrase_repr}")
-            
-            # Create the prompt that will be sent to the model
-            if direction == "english_to_yanomami":
-                prompt = f"Translate from English to Yanomami:\n\nEnglish: {phrase}\n\nYanomami:"
-            else:  # yanomami_to_english
-                prompt = f"Translate from Yanomami to English:\n\nYanomami: {phrase}\n\nEnglish:"
-            
-            # Log the exact prompt being sent to the model
-            logger.info(f"PROMPT SENT TO MODEL:\n{prompt}\n")
-            
-            # Generate translation with enhanced character handling
-            translation = generate_translation(phrase, model, tokenizer, config, direction)
-            
-            # Log the final translation with detailed Unicode representation
-            translation_repr = repr(translation)
-            logger.info(f"FINAL TRANSLATION: {translation}")
-            logger.info(f"TRANSLATION UNICODE: {translation_repr}\n")
-        except Exception as e:
-            logger.error(f"Error processing test phrase '{phrase}': {str(e)}")
-            continue
         
+        # Save results if requested
         if save_results:
-            results["translations"].append({
-                "input": phrase,
-                "direction": direction,
-                "output": translation
-            })
-    
-    # Save results to file if requested
-    if save_results and config.enable_visualizations:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create a descriptive filename
-        if phase is not None and epoch is not None:
-            if batch is not None:
-                filename = f"translations_p{phase}_e{epoch}_b{batch}_{timestamp}.json"
-            else:
-                filename = f"translations_p{phase}_e{epoch}_{timestamp}.json"
-        else:
-            filename = f"translations_final_{timestamp}.json"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"translation_debug_{timestamp}.json"
+            output_path = os.path.join(config.visualization_output_dir, filename)
+            os.makedirs(config.visualization_output_dir, exist_ok=True)
             
-        # Save to visualization directory
-        output_path = os.path.join(config.visualization_output_dir, filename)
-        os.makedirs(config.visualization_output_dir, exist_ok=True)
-        
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
-            
-        logger.info(f"Translation test results saved to {output_path}")
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            logger.info(f"\nSaved results to: {output_path}")
         
         return results
-    
-    return None
+        
+    except Exception as e:
+        logger.error(f"\nError in test_translations: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
+        return None

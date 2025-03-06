@@ -81,23 +81,23 @@ To view the training progress:
 
 ## Managing Training Data
 
-Your training data and checkpoints are stored in the `/yanomami_project` directory on the Lambda instance. This is where your code and data will be synchronized.
+Your training data and checkpoints are stored in the `/lambda_storage` directory on the Lambda instance. This is a persistent storage location that will survive instance restarts.
 
 Important directories:
-- `/yanomami_project/yanomami_dataset`: Dataset files
-- `/yanomami_project/checkpoints`: Training checkpoints
-- `/yanomami_project/logs`: Training logs
-- `/yanomami_project/enhanced_yanomami_translator`: Saved model outputs
-- `/yanomami_project/visualization_results`: Training visualizations
+- `/lambda_storage/yanomami_dataset`: Dataset files
+- `/lambda_storage/checkpoints`: Training checkpoints
+- `/lambda_storage/logs`: Training logs
+- `/lambda_storage/enhanced_yanomami_translator`: Saved model outputs
+- `/lambda_storage/visualization_results`: Training visualizations
 
 ## Retrieving Results
 
 To retrieve your trained model and results from the Lambda instance:
 
 ```bash
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/enhanced_yanomami_translator/ ./enhanced_yanomami_translator/
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/visualization_results/ ./visualization_results/
-rsync -avz ubuntu@<instance-ip>:/yanomami_project/logs/ ./logs/
+rsync -avz ubuntu@<instance-ip>:/lambda_storage/enhanced_yanomami_translator/ ./enhanced_yanomami_translator/
+rsync -avz ubuntu@<instance-ip>:/lambda_storage/visualization_results/ ./visualization_results/
+rsync -avz ubuntu@<instance-ip>:/lambda_storage/logs/ ./logs/
 ```
 
 ## Stopping the Instance
@@ -126,7 +126,7 @@ If you have trouble connecting to the Lambda instance, check:
 ### Training Issues
 
 If training fails or performs poorly:
-1. Check the training logs in `/yanomami_project/logs/`
+1. Check the training logs in `/lambda_storage/logs/`
 2. Try reducing the batch size if you encounter out-of-memory errors
 3. Enable debug mode for more verbose output
 

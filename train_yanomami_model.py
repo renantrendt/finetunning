@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-# Yanomami Translation Model Training Script
+# Yanomami Translation Model Local Training Script
 #
-# This script serves as the unified entry point for training the Yanomami translation model,
-# supporting both local and Lambda Cloud environments. It automatically detects the
-# environment and configures optimal training settings based on available hardware.
-#
-# Features:
-# - Automatic GPU detection and configuration
-# - Support for multiple GPU types (8x A100, 1x A100, MPS)
-# - Dynamic batch size and gradient accumulation
-# - Mixed precision training support
-# - Training resumption capability
-# - Comprehensive logging and visualization
+# This script provides a convenient way to run the Yanomami translation model training
+# on local hardware with optimized settings for your machine.
 
 import os
 import sys

@@ -25,6 +25,14 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import glob
 
+# Import the tokenizer enhancement module
+from yanomami_tokenizer.tokenizer_enhancement import (
+    enhance_tokenizer,
+    load_enhanced_tokenizer,
+    SPECIAL_CHAR_WORDS,
+    replace_special_chars
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -63,8 +71,8 @@ class TranslatorConfig:
         
         # Training hyperparameters
         self.num_epochs = 5
-        self.batch_size = 8
-        self.gradient_accumulation_steps = 4  # Effective batch size = batch_size * gradient_accumulation_steps
+        self.batch_size = 4
+        self.gradient_accumulation_steps = 8  # Effective batch size = batch_size * gradient_accumulation_steps
         self.learning_rate = 5e-5
         self.warmup_ratio = 0.1
         self.max_grad_norm = 1.0
@@ -105,21 +113,21 @@ class TranslatorConfig:
         self.phases = [
             {
                 'name': 'Phase 1: Basic vocabulary',
-                'complexity_threshold': 60,  # Low complexity examples (approx. 25th percentile)
+                'dataset_files': ['combined-ok-translations.jsonl'],  # Large dataset with ~30k basic translations
                 'learning_rate': 5e-5,
-                'num_epochs': 3
+                'num_epochs': 5
             },
             {
                 'name': 'Phase 2: Grammar and structure',
-                'complexity_threshold': 90,  # Medium complexity examples (approx. 75th percentile)
+                'dataset_files': ['grammar-plural.jsonl', 'grammar-verb.jsonl'],  # Grammar-focused examples
                 'learning_rate': 3e-5,
-                'num_epochs': 2
+                'num_epochs': 8
             },
             {
-                'name': 'Phase 3: Full translation',
-                'complexity_threshold': float('inf'),  # Train on all examples
+                'name': 'Phase 3: Advanced phrases and usage',
+                'dataset_files': ['combined-ok-phrases-english-to-yanomami.jsonl', 'combined-ok-phrases-yanomami-to-english.jsonl', 'combined-ok-how-to-p1.jsonl', 'combined-ok-how-to-p2.jsonl'],  # Advanced usage examples
                 'learning_rate': 2e-5,
-                'num_epochs': 2
+                'num_epochs': 5
             }
         ]
 
@@ -336,6 +344,11 @@ def load_yanomami_translator(model_path):
     
     # Load tokenizer and model
     tokenizer = GPT2Tokenizer.from_pretrained(model_path)
+    
+    # Enhance the tokenizer with special character handling
+    tokenizer = enhance_tokenizer(tokenizer)
+    
+    # Load the model
     model = GPT2LMHeadModel.from_pretrained(model_path)
     
     # Configure device for inference
@@ -417,27 +430,77 @@ def main():
     # Load and prepare data
     logger.info("Loading dataset files...")
     print("Loading dataset files...")
-    all_data = []
+    all_data_by_file = {}  # Dictionary to store data by filename
     
     for file in config.dataset_files:
         try:
             file_path = os.path.join(config.dataset_path, file)
             print(f"Attempting to load file: {file_path}")
             file_data = load_jsonl(file_path)
-            all_data.extend(file_data)
-            print(f"Successfully loaded {len(file_data)} examples from {file}")
-            logger.info(f"Loaded {len(file_data)} examples from {file}")
+            
+            # Store data by filename
+            filename = os.path.basename(file_path)
+            all_data_by_file[filename] = file_data
+            
+            print(f"Successfully loaded {len(file_data)} examples from {filename}")
+            logger.info(f"Loaded {len(file_data)} examples from {filename}")
         except Exception as e:
             print(f"Error loading {file}: {e}")
             logger.error(f"Error loading {file}: {e}")
     
-    logger.info(f"Total examples loaded: {len(all_data)}")
+    # Calculate total examples
+    total_examples = sum(len(data) for data in all_data_by_file.values())
+    logger.info(f"Total examples loaded: {total_examples}")
     
-    # Process data
-    processed_data = prepare_data_for_training(all_data)
-    logger.info(f"Total processed examples: {len(processed_data)}")
+    # Process data by file
+    all_processed_data = {}
+    for filename, file_data in all_data_by_file.items():
+        processed_examples = prepare_data_for_training(file_data)
+        all_processed_data[filename] = processed_examples
+        logger.info(f"Processed {len(processed_examples)} examples from {filename}")
     
-    # Implement curriculum learning by sorting examples by complexity
+    # Calculate total processed examples
+    total_processed = sum(len(data) for data in all_processed_data.values())
+    logger.info(f"Total processed examples: {total_processed}")
+    
+    # Implement curriculum learning with file-based dataset selection
+    def get_phase_dataset(phase, all_examples, config):
+        """
+        Get dataset for a specific training phase based on the phase configuration.
+        Uses specific dataset files for each phase instead of complexity-based filtering.
+        
+        Args:
+            phase (dict): Phase configuration
+            all_examples (dict): Dictionary of all loaded examples, keyed by filename
+            config (TranslatorConfig): Configuration object
+            
+        Returns:
+            list: List of examples for this phase
+        """
+        phase_examples = []
+        
+        # If phase specifies dataset files, use only those files
+        if 'dataset_files' in phase:
+            for filename in phase['dataset_files']:
+                if filename in all_examples:
+                    phase_examples.extend(all_examples[filename])
+                    logger.info(f"Added {len(all_examples[filename])} examples from {filename} to {phase['name']}")
+                else:
+                    logger.warning(f"Dataset file {filename} specified in phase {phase['name']} not found")
+        
+        # If no examples found or no dataset files specified, fall back to complexity-based filtering
+        if not phase_examples and 'complexity_threshold' in phase:
+            # Legacy complexity-based filtering
+            threshold = phase['complexity_threshold']
+            for examples_list in all_examples.values():
+                for example in examples_list:
+                    complexity = calculate_complexity(example)
+                    if complexity <= threshold:
+                        phase_examples.append(example)
+        
+        logger.info(f"Phase {phase['name']}: {len(phase_examples)} examples selected")
+        return phase_examples
+        
     def calculate_complexity(example):
         # Calculate complexity based on multiple factors
         # 1. Length of text
@@ -458,16 +521,17 @@ def main():
         
         return complexity
     
-    # Sort data by complexity
-    for example in processed_data:
-        example['complexity'] = calculate_complexity(example)
+    # Calculate complexity for all examples (for potential use in validation)
+    flattened_data = []
+    for examples in all_processed_data.values():
+        for example in examples:
+            example['complexity'] = calculate_complexity(example)
+            flattened_data.append(example)
     
-    sorted_data = sorted(processed_data, key=lambda x: x['complexity'])
-    logger.info(f"Data sorted by complexity for curriculum learning")
-    
-    # Split data
-    train_data, val_data = train_test_split(sorted_data, test_size=0.1, random_state=42)
-    logger.info(f"Training examples: {len(train_data)}")
+    # Create a validation set from all data
+    # We'll use 10% of all data for validation
+    train_data_all, val_data = train_test_split(flattened_data, test_size=0.1, random_state=42)
+    logger.info(f"Total training examples (all phases): {len(flattened_data) - len(val_data)}")
     logger.info(f"Validation examples: {len(val_data)}")
     
     # Create datasets
@@ -490,6 +554,10 @@ def main():
         else:
             logger.info(f"Loading default tokenizer from {config.model_name}")
             tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+        
+        # Enhance the tokenizer with special character handling for Yanomami
+        logger.info("Enhancing tokenizer with special character handling for Yanomami")
+        tokenizer = enhance_tokenizer(tokenizer)
             
         model = GPT2LMHeadModel.from_pretrained(config.model_name)
         
@@ -507,8 +575,8 @@ def main():
     logger.info(f"Using device: {device}")
     model.to(device)
     
-    # Store original training data for phases
-    all_train_data = train_data.copy()
+    # Store original processed data for phases
+    all_train_data = all_processed_data
     
     # Prepare validation dataset once (used across all phases)
     logger.info("Preparing validation dataset...")
@@ -533,9 +601,9 @@ def main():
             for phase_idx, phase in enumerate(config.phases):
                 logger.info(f"\n{'='*50}\n{phase['name']}\n{'='*50}")
                 
-                # Filter data based on complexity threshold for this phase
-                phase_train_data = [ex for ex in all_train_data if ex['complexity'] <= phase['complexity_threshold']]
-                logger.info(f"Phase {phase_idx+1} training on {len(phase_train_data)} examples (complexity <= {phase['complexity_threshold']})")
+                # Get data for this phase based on dataset files
+                phase_train_data = get_phase_dataset(phase, all_train_data, config)
+                logger.info(f"Phase {phase_idx+1} ({phase['name']}) training on {len(phase_train_data)} examples")
                 
                 # Create dataset for this phase
                 phase_train_dataset = Dataset.from_list(phase_train_data)

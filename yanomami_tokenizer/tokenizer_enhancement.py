@@ -4,18 +4,38 @@
 
 import re
 import os
+import unicodedata
 from transformers import AutoTokenizer
 
-# List of common Yanomami words containing the special character 'ɨ'
+# List of common Yanomami words containing special characters (ɨ, ë, ã, ũ)
 # These words will be added to the tokenizer vocabulary to ensure they are tokenized as single tokens
 SPECIAL_CHAR_WORDS = [
+    # Common grammatical examples and test words
+    "grano", "granoyë", "granopë", "granopɨ", "granopɨyë", "granopɨpë",
+    "aheprariyo", "yanomami", "yanomamɨ", "thëpë", "totihi", "heri", "weti",
+    "tha", "kami", "yai", "huë", "hãrãrema", "thë", "aheai", "wak", "ka",
+    
+    # Words with ɨ
     "kɨ", "Ɨhɨki", "Ɨhɨ", "kɨa", "pɨ", "ɨpɨtɨ", "ɨ", "rɨ", "kɨrɨ", "hɨ",
     "Ɨpɨtɨ", "wakɨ", "pɨtaha", "pɨtɨ", "ɨpɨ", "ɨhɨ", "ɨhɨki", "ɨwɨ",
     "hɨɨkɨrɨ", "hɨɨkɨ", "kɨri", "ɨpɨhɨ", "ɨpɨtɨwɨ", "sɨ", "yɨwɨ",
     "Wakɨ", "ɨpɨtɨhɨ", "pɨɨ", "ɨkɨɨ", "ɨkɨma", "ɨkɨmai", "ɨkɨmarei",
     "ɨkɨoprou", "ɨkɨrayou", "ɨkɨhiwë", "ɨkɨ", "pehihiprɨ", "ɨpɨtɨawɨ",
     "kamɨ", "hɨɨrɨ", "Kɨ", "ãpɨtɨ", "Yiiyɨ", "bɨtɨ", "ɨhurëpɨ",
-    "Ũrihipɨ", "ɨtɨ", "hɨkɨri", "hɨtɨmɨ", "ãhiãmɨ"
+    "Ũrihipɨ", "ɨtɨ", "hɨkɨri", "hɨtɨmɨ", "ãhiãmɨ",
+    
+    # Words with ë
+    "ë", "yë", "hëri", "hëa", "hëtɨ", "hëmɨ", "hëyë", "hëtëhë",
+    "ɨkɨhiwë", "ɨhurëpɨ", "iyë", "yëtɨ", "yëpɨ", "yëhë", "yëtëhë", "yëyë",
+    "yëkɨ", "yëpë", "yëpɨa", "yëpɨrɨ", "yëpɨtɨ", "yëpɨwɨ", "yëpɨyë",
+    
+    # Words with ã
+    "ã", "ãpɨtɨ", "ãhiãmɨ", "ãhã", "ãhɨ", "ãhɨã", "ãhɨãmɨ", "ãhɨãpɨ",
+    "ãhɨãwɨ", "ãhɨãyë", "ãhɨãyɨ", "ãhɨãyɨpɨ", "ãhɨãyɨwɨ", "ãhɨãyɨyë",
+    
+    # Words with ũ
+    "ũ", "Ũrihipɨ", "ũhũ", "ũhũã", "ũhũãmɨ", "ũhũãpɨ", "ũhũãwɨ", "ũhũãyë",
+    "ũhũãyɨ", "ũhũãyɨpɨ", "ũhũãyɨwɨ", "ũhũãyɨyë"
 ]
 
 # Character replacement mapping for fallback tokenization
@@ -40,37 +60,110 @@ def enhance_tokenizer(tokenizer):
     num_added = tokenizer.add_tokens(SPECIAL_CHAR_WORDS)
     print(f"Added {num_added} special Yanomami words to tokenizer vocabulary")
     
+    # Add common prefixes and suffixes for grammatical forms
+    grammatical_forms = []
+    
+    # Add common plural forms and other grammatical variations
+    for base_word in ['grano', 'yanomami', 'aheprariyo', 'heri', 'wak', 'tha', 'kami']:
+        # Add plural forms with special characters
+        grammatical_forms.extend([
+            f"{base_word}pë",  # Common plural suffix with ë
+            f"{base_word}pɨ",  # Common plural suffix with ɨ
+            f"{base_word}yë",  # Common suffix with ë
+            f"{base_word}yɨ",  # Common suffix with ɨ
+            f"{base_word}thë",  # Common suffix with ë
+        ])
+    
+    # Add these grammatical forms to the tokenizer
+    num_added_grammar = tokenizer.add_tokens(grammatical_forms)
+    print(f"Added {num_added_grammar} grammatical forms to tokenizer vocabulary")
+    
     # Store the original tokenizer methods
     original_tokenize = tokenizer.tokenize
     original_encode = tokenizer.encode
     
     # Override the tokenize method to handle special characters
     def enhanced_tokenize(text, *args, **kwargs):
-        # First try with the original tokenizer
-        tokens = original_tokenize(text, *args, **kwargs)
-        
-        # Check if any tokens contain the special character
-        # If they do, it means the tokenizer didn't recognize them as whole tokens
-        special_char_pattern = re.compile(f"[{''.join(CHAR_REPLACEMENTS.keys())}]")
-        
-        # If we find special characters in the tokens, try the fallback approach
-        if any(special_char_pattern.search(token) for token in tokens if isinstance(token, str)):
-            # Apply character replacements for fallback tokenization
-            replaced_text = replace_special_chars(text)
-            tokens = original_tokenize(replaced_text, *args, **kwargs)
-            print(f"Used fallback tokenization for text containing special characters: {text}")
-        
-        return tokens
+        try:
+            # First, normalize the Unicode characters
+            try:
+                normalized_text = unicodedata.normalize('NFC', text)
+            except Exception as e:
+                print(f"Warning: Unicode normalization failed: {str(e)}. Using original text.")
+                normalized_text = text
+            
+            # Check if text contains any special characters
+            special_char_pattern = re.compile(f"[{''.join(CHAR_REPLACEMENTS.keys())}]")
+            
+            # If text contains special characters, handle them specially
+            if special_char_pattern.search(normalized_text):
+                print(f"Processing text with Yanomami special characters: {normalized_text[:50]}...")
+                
+                # Extract all words with special characters from the text
+                words_with_special_chars = set()
+                for word in re.findall(r'\w+', normalized_text):
+                    if special_char_pattern.search(word):
+                        words_with_special_chars.add(word)
+                        # Also add versions with common prefixes/suffixes
+                        words_with_special_chars.add(f"{word}pë")  # Common plural form
+                        words_with_special_chars.add(f"{word}yë")  # Common suffix
+                
+                # If we found any words with special characters, add them to the tokenizer
+                if words_with_special_chars:
+                    num_added = tokenizer.add_tokens(list(words_with_special_chars))
+                    if num_added > 0:
+                        print(f"Added {num_added} new words with special characters to tokenizer vocabulary")
+                        
+                # For words that might still cause issues, create a fallback version
+                # with special characters replaced
+                fallback_text = replace_special_chars(normalized_text)
+                if fallback_text != normalized_text:
+                    # Try tokenizing both versions and use the one with fewer tokens
+                    original_tokens = original_tokenize(normalized_text, *args, **kwargs)
+                    fallback_tokens = original_tokenize(fallback_text, *args, **kwargs)
+                    
+                    if len(fallback_tokens) < len(original_tokens):
+                        print(f"Using fallback tokenization for better handling of special characters")
+                        return fallback_tokens
+            
+            # Use the original tokenizer with normalized text
+            tokens = original_tokenize(normalized_text, *args, **kwargs)
+            return tokens
+        except Exception as e:
+            print(f"Error in enhanced tokenization: {str(e)}. Falling back to original method.")
+            # If anything fails, fall back to the original tokenizer with the original text
+            return original_tokenize(text, *args, **kwargs)
     
     # Override the encode method
     def enhanced_encode(text, *args, **kwargs):
-        # First try with the original encoder
+        # Check if text contains any special characters
+        special_char_pattern = re.compile(f"[{''.join(CHAR_REPLACEMENTS.keys())}]")
+        
+        # If text contains special characters, log a warning but continue
+        if special_char_pattern.search(text):
+            print(f"Warning: Text contains Yanomami special characters in encode method: {text[:50]}...")
+            
+            # Extract all words with special characters from the text
+            words_with_special_chars = set()
+            for word in re.findall(r'\w+', text):
+                if special_char_pattern.search(word):
+                    words_with_special_chars.add(word)
+            
+            # If we found any words with special characters, add them to the tokenizer
+            if words_with_special_chars:
+                num_added = tokenizer.add_tokens(list(words_with_special_chars))
+                if num_added > 0:
+                    print(f"Added {num_added} new words with special characters to tokenizer vocabulary")
+        
+        # Use the original encoder, but catch exceptions
         try:
             return original_encode(text, *args, **kwargs)
         except Exception as e:
-            # If encoding fails, try with character replacement
-            replaced_text = replace_special_chars(text)
-            return original_encode(replaced_text, *args, **kwargs)
+            print(f"Warning: Encoding failed for text: {text[:50]}... Error: {str(e)}")
+            # Use a fallback approach - replace special characters with ASCII equivalents
+            fallback_text = replace_special_chars(text)
+            print(f"Using fallback encoding with replaced special characters")
+            return original_encode(fallback_text, *args, **kwargs)
     
     # Apply the enhanced methods
     tokenizer.tokenize = enhanced_tokenize

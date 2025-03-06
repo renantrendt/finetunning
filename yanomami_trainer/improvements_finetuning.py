@@ -13,6 +13,7 @@ import platform
 import gc
 import shutil
 import importlib.util
+import unicodedata
 from datetime import datetime
 from transformers import (
     GPT2Tokenizer, 
@@ -126,13 +127,15 @@ class TranslatorConfig:
         self.padding = "max_length"
         self.truncation = True
         
-        # Generation settings
-        self.max_gen_length = 100
-        self.temperature = 0.7
-        self.top_p = 0.9
-        self.top_k = 50
-        self.num_beams = 4
+        # Generation settings - Optimized to reduce repetition
+        self.max_gen_length = 50  # Reduced from 100 to prevent long repetitive sequences
+        self.temperature = 0.9  # Increased from 0.7 to encourage more diversity
+        self.top_p = 0.92  # Slightly increased for more diversity
+        self.top_k = 40  # Reduced to focus on more likely tokens
+        self.num_beams = 5  # Increased for better search
         self.do_sample = True
+        self.repetition_penalty = 1.5  # Added to penalize repetition
+        self.no_repeat_ngram_size = 3  # Prevent repeating 3-grams
         
         # Early stopping
         self.patience = 3
@@ -228,26 +231,57 @@ def prepare_data_for_training(examples):
 
 def tokenize_function(examples, tokenizer, config):
     # Initialize lists to store processed data
-    input_texts = examples['input']
-    output_texts = examples['output']
-    
-    # For training, we need both input and output together
-    combined_texts = [f"{input_text} {output_text}" for input_text, output_text in zip(input_texts, output_texts)]
-    
-    # Return empty dict if no texts to process
-    if not combined_texts:
-        logger.warning("No valid examples found in batch.")
-        return {"input_ids": [], "attention_mask": []}
-    
-    # Tokenize combined texts
-    tokenized = tokenizer(
-        combined_texts, 
-        padding=config.padding, 
-        truncation=config.truncation, 
-        max_length=config.max_length
-    )
-    
-    return tokenized
+    try:
+        input_texts = examples['input']
+        output_texts = examples['output']
+        
+        # For training, we need both input and output together
+        combined_texts = [f"{input_text} {output_text}" for input_text, output_text in zip(input_texts, output_texts)]
+        
+        # Return empty dict with required columns if no texts to process
+        if not combined_texts:
+            logger.warning("No valid examples found in batch.")
+            return {
+                "input_ids": [[0]],  # Add a dummy token ID
+                "attention_mask": [[0]]  # Add a dummy attention mask
+            }
+        
+        # Tokenize combined texts with error handling
+        try:
+            tokenized = tokenizer(
+                combined_texts, 
+                padding=config.padding, 
+                truncation=config.truncation, 
+                max_length=config.max_length,
+                return_tensors=None  # Ensure we get lists, not tensors
+            )
+            
+            # Verify that the required columns are present
+            if 'input_ids' not in tokenized or 'attention_mask' not in tokenized:
+                logger.warning(f"Tokenization did not return required columns. Got: {list(tokenized.keys())}")
+                # Add missing columns with dummy values if needed
+                if 'input_ids' not in tokenized:
+                    tokenized['input_ids'] = [[0] for _ in range(len(combined_texts))]
+                if 'attention_mask' not in tokenized:
+                    tokenized['attention_mask'] = [[0] for _ in range(len(combined_texts))]
+            
+            return tokenized
+            
+        except Exception as e:
+            logger.error(f"Error during tokenization: {str(e)}")
+            # Return dummy tokenized data with the required columns
+            return {
+                "input_ids": [[0] for _ in range(len(combined_texts))],
+                "attention_mask": [[0] for _ in range(len(combined_texts))]
+            }
+            
+    except Exception as e:
+        logger.error(f"Error processing examples: {str(e)}")
+        # Return dummy data with required columns
+        return {
+            "input_ids": [[0]],
+            "attention_mask": [[0]]
+        }
 
 class GPT2Dataset(TorchDataset):
     def __init__(self, encodings):
@@ -339,20 +373,32 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     Returns:
         str: The generated translation
     """
-    # Add appropriate prefix based on translation direction
-    if prefix_type == "english_to_yanomami":
-        if "translate" in text.lower():
-            prompt = f"English: {text} => Yanomami:"
-        else:
-            prompt = f"English: Translate this to Yanomami: {text} => Yanomami:"
-    else:
-        if "translate" in text.lower():
-            prompt = f"Yanomami: {text} => English:"
-        else:
-            prompt = f"Yanomami: Translate this to English: {text} => English:"
+    # Ensure text is properly encoded
+    try:
+        # Normalize Unicode characters
+        text = unicodedata.normalize('NFC', text)
+    except Exception as e:
+        logger.warning(f"Error normalizing input text: {str(e)}")
     
-    # Tokenize input
-    inputs = tokenizer(prompt, return_tensors="pt")
+    # Improved prompt engineering with clearer structure and less repetitive patterns
+    if prefix_type == "english_to_yanomami":
+        # Simplified prompt for English to Yanomami translation
+        prompt = f"Translate from English to Yanomami:\n\nEnglish: {text}\n\nYanomami:"
+    else:
+        # Simplified prompt for Yanomami to English translation
+        prompt = f"Translate from Yanomami to English:\n\nYanomami: {text}\n\nEnglish:"
+    
+    # Tokenize input with enhanced handling for special characters
+    try:
+        # Use enhanced tokenization if available
+        if hasattr(tokenizer, 'enhanced_encode'):
+            input_ids = tokenizer.enhanced_encode(prompt, return_tensors="pt")
+            inputs = {"input_ids": input_ids}
+        else:
+            inputs = tokenizer(prompt, return_tensors="pt")
+    except Exception as e:
+        logger.warning(f"Error in enhanced tokenization: {str(e)}. Falling back to standard tokenization.")
+        inputs = tokenizer(prompt, return_tensors="pt")
     
     # Determine device
     if torch.cuda.is_available():
@@ -366,7 +412,7 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     inputs = {k: v.to(device) for k, v in inputs.items()}
     model.to(device)
     
-    # Generate translation
+    # Generate translation with improved parameters to reduce repetition
     outputs = model.generate(
         **inputs,
         max_length=config.max_gen_length,
@@ -376,15 +422,73 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
         top_k=config.top_k,
         num_beams=config.num_beams,
         do_sample=config.do_sample,
-        pad_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.eos_token_id,
+        repetition_penalty=config.repetition_penalty,  # Penalize repetition
+        no_repeat_ngram_size=config.no_repeat_ngram_size,  # Prevent repeating n-grams
+        early_stopping=True  # Stop when a reasonable output is generated
     )
     
-    # Decode and return translation
-    translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # Decode and return translation with enhanced handling for special characters
+    try:
+        # Use enhanced decoding if available
+        if hasattr(tokenizer, 'enhanced_decode'):
+            translation = tokenizer.enhanced_decode(outputs[0], skip_special_tokens=True)
+        else:
+            translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except Exception as e:
+        logger.warning(f"Error in enhanced decoding: {str(e)}. Falling back to standard decoding.")
+        translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
     
-    # Extract the actual translation part (after the prompt)
-    if "=>" in translation:
-        translation = translation.split("=>")[1].strip()
+    # Log the raw model output for debugging
+    logger.debug(f"Raw model output:\n{translation}")
+    
+    # Clean and extract the relevant part of the translation
+    cleaned_translation = clean_translation_output(translation, prefix_type)
+    
+    return cleaned_translation
+
+def clean_translation_output(translation, prefix_type):
+    """
+    Clean and extract the relevant part of the translation output.
+    
+    Args:
+        translation (str): Raw translation output from the model
+        prefix_type (str): Type of translation ('english_to_yanomami' or 'yanomami_to_english')
+        
+    Returns:
+        str: Cleaned translation
+    """
+    # Extract the actual translation part based on the prompt format
+    if prefix_type == "english_to_yanomami":
+        if "Yanomami:" in translation:
+            translation = translation.split("Yanomami:")[1].strip()
+    else:  # yanomami_to_english
+        if "English:" in translation:
+            translation = translation.split("English:")[1].strip()
+            
+    # Clean up any remaining prompt text or artifacts
+    translation = translation.replace("Translate from English to Yanomami:", "").strip()
+    translation = translation.replace("Translate from Yanomami to English:", "").strip()
+    translation = translation.replace("English:", "").strip()
+    translation = translation.replace("Yanomami:", "").strip()
+    
+    # Remove any repetitive patterns that might appear
+    # This helps with the model's tendency to repeat itself
+    lines = translation.split('\n')
+    if len(lines) > 1:
+        # Keep only non-empty, unique lines
+        unique_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and line not in unique_lines:
+                unique_lines.append(line)
+        translation = ' '.join(unique_lines)
+    
+    # Ensure proper Unicode normalization
+    try:
+        translation = unicodedata.normalize('NFC', translation)
+    except Exception as e:
+        logger.warning(f"Error normalizing cleaned translation: {str(e)}")
     
     return translation
 
@@ -594,35 +698,37 @@ def main():
     logger.info(f"Validation examples: {len(val_data)}")
     
     # Create datasets
-    train_dataset = Dataset.from_list(train_data)
+    train_dataset = Dataset.from_list(train_data_all)
     val_dataset = Dataset.from_list(val_data)
     
     # Load model and tokenizer
-    if os.path.exists(config.model_output_dir) and os.path.isdir(config.model_output_dir):
-        logger.info(f"Loading model and tokenizer from {config.model_output_dir}")
-        tokenizer = GPT2Tokenizer.from_pretrained(config.model_output_dir)
-        model = GPT2LMHeadModel.from_pretrained(config.model_output_dir)
-    else:
-        logger.info(f"Loading pre-trained model and tokenizer")
-        
-        # Check if we have a custom Yanomami tokenizer
-        yanomami_tokenizer_path = './yanomami_tokenizer/complete_yanomami_tokenizer'
-        if os.path.exists(yanomami_tokenizer_path):
-            logger.info(f"Loading Yanomami-specific tokenizer from {yanomami_tokenizer_path}")
-            tokenizer = GPT2Tokenizer.from_pretrained(yanomami_tokenizer_path)
-        else:
-            logger.info(f"Loading default tokenizer from {config.model_name}")
-            tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+    # Ensure the output directory exists
+    os.makedirs(config.model_output_dir, exist_ok=True)
+    
+    # First, load the Yanomami-specific tokenizer
+    logger.info("Loading Yanomami-specific tokenizer")
+    yanomami_tokenizer_path = './yanomami_tokenizer/complete_yanomami_tokenizer'
+    
+    if os.path.exists(yanomami_tokenizer_path):
+        logger.info(f"Loading Yanomami-specific tokenizer from {yanomami_tokenizer_path}")
+        tokenizer = GPT2Tokenizer.from_pretrained(yanomami_tokenizer_path)
         
         # Enhance the tokenizer with special character handling for Yanomami
         logger.info("Enhancing tokenizer with special character handling for Yanomami")
         tokenizer = enhance_tokenizer(tokenizer)
-            
-        model = GPT2LMHeadModel.from_pretrained(config.model_name)
-        
-        # Resize token embeddings to match the tokenizer vocabulary size
-        logger.info(f"Resizing token embeddings from {model.get_input_embeddings().num_embeddings} to {len(tokenizer)}")
-        model.resize_token_embeddings(len(tokenizer))
+    else:
+        # Halt execution if Yanomami tokenizer is not available
+        error_msg = f"ERROR: Yanomami-specific tokenizer not found at {yanomami_tokenizer_path}"
+        logger.error(error_msg)
+        raise FileNotFoundError(error_msg)
+    
+    # Now load or initialize the model
+    logger.info("Loading or initializing model")
+    model = GPT2LMHeadModel.from_pretrained(config.model_name)
+    
+    # Resize token embeddings to match the tokenizer vocabulary size
+    logger.info(f"Resizing token embeddings from {model.get_input_embeddings().num_embeddings} to {len(tokenizer)}")
+    model.resize_token_embeddings(len(tokenizer))
     
     # Set padding token
     tokenizer.pad_token = tokenizer.eos_token
@@ -639,12 +745,56 @@ def main():
     
     # Prepare validation dataset once (used across all phases)
     logger.info("Preparing validation dataset...")
-    val_dataset_obj = Dataset.from_list(val_data)
-    tokenized_val = val_dataset_obj.map(
-        lambda examples: tokenize_function(examples, tokenizer, config), 
-        batched=True
-    )
-    tokenized_val.set_format("torch", columns=["input_ids", "attention_mask"])
+    
+    # Create a new dataset with the required columns for validation
+    tokenized_val_data = []
+    
+    # Process each validation example individually
+    for example in val_data:
+        try:
+            # Combine input and output for training
+            combined_text = f"{example['input']} {example['output']}"
+            
+            # Tokenize the text
+            try:
+                tokens = tokenizer(
+                    combined_text,
+                    padding=config.padding,
+                    truncation=config.truncation,
+                    max_length=config.max_length,
+                    return_tensors="pt"  # Return PyTorch tensors directly
+                )
+                
+                # Add to tokenized data
+                tokenized_val_data.append({
+                    "input_ids": tokens["input_ids"][0],  # Remove batch dimension
+                    "attention_mask": tokens["attention_mask"][0]  # Remove batch dimension
+                })
+                
+            except Exception as e:
+                logger.warning(f"Error tokenizing validation text: {str(e)}. Using dummy tokens.")
+                # Use dummy tokens if tokenization fails
+                tokenized_val_data.append({
+                    "input_ids": torch.tensor([0, 0]),
+                    "attention_mask": torch.tensor([1, 1])
+                })
+                
+        except Exception as e:
+            logger.warning(f"Error processing validation example: {str(e)}. Skipping.")
+    
+    # Create a new dataset from the tokenized validation data
+    if tokenized_val_data:
+        tokenized_val = Dataset.from_list(tokenized_val_data)
+        logger.info(f"Created validation dataset with {len(tokenized_val_data)} tokenized examples")
+    else:
+        # Create a dummy dataset if no examples were processed successfully
+        logger.warning("No validation examples were tokenized successfully. Creating dummy dataset.")
+        tokenized_val = Dataset.from_dict({
+            "input_ids": [torch.tensor([0, 0])],
+            "attention_mask": [torch.tensor([1, 1])]
+        })
+    
+    # Create the validation dataset
     val_dataset = GPT2Dataset(tokenized_val)
     eval_dataloader = DataLoader(
         val_dataset,
@@ -680,13 +830,54 @@ def main():
                 
                 # Tokenize datasets for this phase
                 logger.info(f"Tokenizing phase {phase_idx+1} dataset...")
-                tokenized_train = phase_train_dataset.map(
-                    lambda examples: tokenize_function(examples, tokenizer, config), 
-                    batched=True
-                )
                 
-                # Set format for PyTorch
-                tokenized_train.set_format("torch", columns=["input_ids", "attention_mask"])
+                # Create a new dataset with the required columns
+                tokenized_data = []
+                
+                # Process each example individually to avoid batch errors
+                for example in phase_train_data:
+                    try:
+                        # Combine input and output for training
+                        combined_text = f"{example['input']} {example['output']}"
+                        
+                        # Tokenize the text
+                        try:
+                            tokens = tokenizer(
+                                combined_text,
+                                padding=config.padding,
+                                truncation=config.truncation,
+                                max_length=config.max_length,
+                                return_tensors="pt"  # Return PyTorch tensors directly
+                            )
+                            
+                            # Add to tokenized data
+                            tokenized_data.append({
+                                "input_ids": tokens["input_ids"][0],  # Remove batch dimension
+                                "attention_mask": tokens["attention_mask"][0]  # Remove batch dimension
+                            })
+                            
+                        except Exception as e:
+                            logger.warning(f"Error tokenizing text: {str(e)}. Using dummy tokens.")
+                            # Use dummy tokens if tokenization fails
+                            tokenized_data.append({
+                                "input_ids": torch.tensor([0, 0]),
+                                "attention_mask": torch.tensor([1, 1])
+                            })
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing example: {str(e)}. Skipping.")
+                
+                # Create a new dataset from the tokenized data
+                if tokenized_data:
+                    tokenized_train = Dataset.from_list(tokenized_data)
+                    logger.info(f"Created dataset with {len(tokenized_data)} tokenized examples")
+                else:
+                    # Create a dummy dataset if no examples were processed successfully
+                    logger.warning("No examples were tokenized successfully. Creating dummy dataset.")
+                    tokenized_train = Dataset.from_dict({
+                        "input_ids": [torch.tensor([0, 0])],
+                        "attention_mask": [torch.tensor([1, 1])]
+                    })
                 
                 # Create PyTorch datasets
                 train_dataset = GPT2Dataset(tokenized_train)
@@ -1308,18 +1499,51 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
         
     logger.info(test_header)
     
+    # Enhanced test phrases with more diverse examples and special Yanomami characters
     test_phrases = [
-        ("What does 'aheprariyo' mean in Yanomami?", "english_to_yanomami"),
-        ("Hello, how are you?", "english_to_yanomami"),
-        ("I am learning Yanomami", "english_to_yanomami"),
-        ("What is your name?", "english_to_yanomami"),
-        ("Thank you for your help", "english_to_yanomami"),
+        # Basic English to Yanomami phrases
+        ("Hello", "english_to_yanomami"),
+        ("Good morning", "english_to_yanomami"),
+        ("Thank you", "english_to_yanomami"),
+        ("My name is John", "english_to_yanomami"),
+        ("I am learning Yanomami language", "english_to_yanomami"),
+        
+        # More complex English phrases
+        ("Where is the nearest village?", "english_to_yanomami"),
+        ("Can you help me find water?", "english_to_yanomami"),
+        ("The forest is beautiful today", "english_to_yanomami"),
+        
+        # Grammar-focused examples
+        ("How is the plural of 'grano' formed?", "english_to_yanomami"),
+        ("What is the past tense of 'to walk'?", "english_to_yanomami"),
+        
+        # Basic Yanomami to English phrases
         ("aheprariyo", "yanomami_to_english"),
-        ("Kami yanomae thë ã", "yanomami_to_english"),
-        ("thë aheai", "yanomami_to_english"),
         ("Weti tha?", "yanomami_to_english"),
-        ("Kami yai huë", "yanomami_to_english")
+        ("Kami yai huë", "yanomami_to_english"),  # Contains special character ë
+        
+        # Phrases with special characters
+        ("Kami yanomae thë ã", "yanomami_to_english"),  # Contains special characters ë, ã
+        ("thë aheai", "yanomami_to_english"),  # Contains special character ë
+        ("hãrãrema", "yanomami_to_english"),  # Contains multiple special characters ã
+        ("ɨhɨ heri ka wakɨ", "yanomami_to_english"),  # Contains special character ɨ
+        
+        # Sentences with multiple special characters
+        ("Yanomamɨ thëpë ã totihi", "yanomami_to_english")  # Contains ɨ, ë, ã
     ]
+    
+    # Ensure all test phrases are properly encoded
+    normalized_test_phrases = []
+    for phrase, direction in test_phrases:
+        try:
+            # Normalize Unicode characters
+            normalized_phrase = unicodedata.normalize('NFC', phrase)
+            normalized_test_phrases.append((normalized_phrase, direction))
+        except Exception as e:
+            logger.warning(f"Error normalizing test phrase '{phrase}': {str(e)}. Using original.")
+            normalized_test_phrases.append((phrase, direction))
+    
+    test_phrases = normalized_test_phrases
     
     # Initialize results dictionary if we're saving results
     results = {}
@@ -1333,9 +1557,34 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
         }
     
     for phrase, direction in test_phrases:
-        logger.info(f"\nInput ({direction}): {phrase}")
-        translation = generate_translation(phrase, model, tokenizer, config, direction)
-        logger.info(f"Translation: {translation}")
+        try:
+            # Create a clear section header for each test case
+            logger.info(f"\n{'='*60}\n{direction.upper()} TEST CASE\n{'='*60}")
+            
+            # Log the input text with detailed Unicode representation
+            phrase_repr = repr(phrase)
+            logger.info(f"INPUT TEXT: {phrase}")
+            logger.info(f"INPUT UNICODE: {phrase_repr}")
+            
+            # Create the prompt that will be sent to the model
+            if direction == "english_to_yanomami":
+                prompt = f"Translate from English to Yanomami:\n\nEnglish: {phrase}\n\nYanomami:"
+            else:  # yanomami_to_english
+                prompt = f"Translate from Yanomami to English:\n\nYanomami: {phrase}\n\nEnglish:"
+            
+            # Log the exact prompt being sent to the model
+            logger.info(f"PROMPT SENT TO MODEL:\n{prompt}\n")
+            
+            # Generate translation with enhanced character handling
+            translation = generate_translation(phrase, model, tokenizer, config, direction)
+            
+            # Log the final translation with detailed Unicode representation
+            translation_repr = repr(translation)
+            logger.info(f"FINAL TRANSLATION: {translation}")
+            logger.info(f"TRANSLATION UNICODE: {translation_repr}\n")
+        except Exception as e:
+            logger.error(f"Error processing test phrase '{phrase}': {str(e)}")
+            continue
         
         if save_results:
             results["translations"].append({

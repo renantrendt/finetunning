@@ -8,6 +8,11 @@ import json
 import torch
 import numpy as np
 import time
+import psutil
+import platform
+import gc
+import shutil
+import importlib.util
 from datetime import datetime
 from transformers import (
     GPT2Tokenizer, 
@@ -24,6 +29,8 @@ from torch.cuda.amp import autocast, GradScaler
 import matplotlib.pyplot as plt
 from pathlib import Path
 import glob
+# Import from the same package
+from yanomami_trainer.visualization_utils import TrainingVisualizer
 
 # Import the tokenizer enhancement module
 from yanomami_tokenizer.tokenizer_enhancement import (
@@ -33,26 +40,61 @@ from yanomami_tokenizer.tokenizer_enhancement import (
     replace_special_chars
 )
 
-# Configure logging
+# Configure enhanced logging with timestamps and detailed formatting
+log_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+log_file = f"training_{log_timestamp}.log"
+log_dir = "logs"
+
+# Create logs directory if it doesn't exist
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+log_path = os.path.join(log_dir, log_file)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("training.log", mode='w')  # Use mode='w' to overwrite the file
+        logging.FileHandler(log_path, mode='w')  # Use mode='w' to overwrite the file
     ]
 )
 
 # Force output to be displayed in the terminal
-print("Starting Yanomami-English translation model fine-tuning...")
+print(f"Starting Yanomami-English translation model fine-tuning... (Logs: {log_path})")
 
 # Create a console handler with a higher log level
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 
+# Get logger
+logger = logging.getLogger(__name__)
+
 # Add the handler to the logger
 logger = logging.getLogger(__name__)
 logger.addHandler(console)
+
+# Log system information at startup
+logger.info(f"{'='*30} YANOMAMI TRANSLATION MODEL TRAINING {'='*30}")
+logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+logger.info(f"Python version: {platform.python_version()}")
+logger.info(f"System: {platform.system()} {platform.release()}")
+logger.info(f"CPU: {platform.processor()}")
+logger.info(f"Available CPU cores: {psutil.cpu_count(logical=True)}")
+logger.info(f"System memory: {psutil.virtual_memory().total / (1024**3):.2f} GB")
+logger.info(f"PyTorch version: {torch.__version__}")
+logger.info(f"CUDA available: {torch.cuda.is_available()}")
+
+if torch.cuda.is_available():
+    logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
+    logger.info(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    logger.info(f"MPS (Apple Silicon) device available")
+else:
+    logger.info(f"Running on CPU only")
+    
+logger.info(f"{'='*85}\n")
 
 # Configuration class for easy parameter management
 class TranslatorConfig:
@@ -107,6 +149,23 @@ class TranslatorConfig:
         
         # Save frequency (in steps)
         self.save_steps = 1000
+        
+        # HellaSwag evaluation settings
+        self.enable_hellaswag_eval = True  # Enable HellaSwag evaluation
+        self.hellaswag_eval_epochs = [1, 3, 5]  # Epochs to run HellaSwag evaluation
+        self.hellaswag_num_examples = 100  # Number of examples to evaluate
+        self.hellaswag_compare_baselines = True  # Compare with baseline models
+        
+        # Visualization settings
+        self.enable_visualizations = True  # Enable training visualizations
+        self.visualization_output_dir = "./visualization_results"  # Directory to save visualizations
+        self.plot_at_epochs = [1, 3, 5]  # Epochs to generate plots
+        self.plot_at_end = True  # Generate plots at the end of training
+        self.plot_batch_interval = 500  # Plot every N batches (0 to disable)
+        self.baseline_precision = {  # Baseline precision values for comparison
+            "GPT-2": 0.42,
+            "GPT-3": 0.68
+        }
         
         # Multi-phase training settings
         self.enable_multi_phase = True
@@ -592,6 +651,17 @@ def main():
         batch_size=config.batch_size
     )
     
+    # Initialize visualization utilities if enabled
+    visualizer = None
+    if config.enable_visualizations:
+        logger.info("Initializing visualization utilities...")
+        visualizer = TrainingVisualizer(output_dir=config.visualization_output_dir)
+        
+        # Set baseline precision values for comparison
+        for model_name, precision in config.baseline_precision.items():
+            visualizer.set_baseline_precision(model_name, precision)
+            logger.info(f"Set baseline precision for {model_name}: {precision}")
+    
     # Multi-phase training
     try:
         if config.enable_multi_phase:
@@ -742,27 +812,106 @@ def main():
                         # Accumulate loss
                         epoch_loss += loss.item() * config.gradient_accumulation_steps
                         
-                        # Log progress
+                        # Log progress with enhanced batch information
                         if batch_idx % 10 == 0:
                             progress_percent = (batch_idx + 1) / total_batches * 100
                             remaining_batches = total_batches - batch_idx - 1
                             elapsed_time = time.time() - start_time
                             
+                            # Calculate estimated time remaining
+                            if batch_idx > 0:
+                                time_per_batch = elapsed_time / (batch_idx + 1)
+                                estimated_time_remaining = time_per_batch * remaining_batches
+                                eta_str = f", ETA: {estimated_time_remaining:.2f}s"
+                            else:
+                                eta_str = ""
+                            
+                            # Get current learning rate
+                            current_lr = optimizer.param_groups[0]['lr']
+                            
+                            # Get memory usage if CUDA is available
+                            mem_str = ""
+                            if torch.cuda.is_available():
+                                mem_allocated = torch.cuda.memory_allocated() / 1024**2  # MB
+                                mem_reserved = torch.cuda.memory_reserved() / 1024**2    # MB
+                                mem_str = f", GPU Mem: {mem_allocated:.1f}MB/{mem_reserved:.1f}MB"
+                            
+                            # Log detailed batch information
                             logger.info(
-                                f"Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1}, "
+                                f"Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} ({phase['name']}), "
                                 f"Batch {batch_idx+1}/{total_batches} ({progress_percent:.2f}%), "
                                 f"Loss: {loss.item()*config.gradient_accumulation_steps:.4f}, "
-                                f"Elapsed: {elapsed_time:.2f}s"
+                                f"LR: {current_lr:.2e}, "
+                                f"Elapsed: {elapsed_time:.2f}s{eta_str}{mem_str}"
                             )
+                            
+                            # Record metrics for visualization if enabled
+                            if config.enable_visualizations and visualizer:
+                                batch_loss = loss.item() * config.gradient_accumulation_steps
+                                visualizer.record_training_metrics(
+                                    phase=phase_idx+1,
+                                    epoch=epoch+1,
+                                    batch=batch_idx+1,
+                                    loss=batch_loss,
+                                    learning_rate=current_lr
+                                )
+                                
+                                # Generate plots at specified batch intervals if configured
+                                if config.plot_batch_interval > 0 and batch_idx % config.plot_batch_interval == 0 and batch_idx > 0:
+                                    batch_suffix = f" (Phase {phase_idx+1}, Epoch {epoch+1}, Batch {batch_idx+1})"
+                                    visualizer.plot_loss_and_lr(title_suffix=batch_suffix)
+                                    
+                                    # Run translation tests at batch intervals
+                                    # Only do this occasionally to avoid slowing down training too much
+                                    if batch_idx % (config.plot_batch_interval * 2) == 0:
+                                        logger.info(f"Running quick translation test at batch {batch_idx+1}...")
+                                        test_translations(
+                                            model=model,
+                                            tokenizer=tokenizer,
+                                            config=config,
+                                            phase=phase_idx+1,
+                                            epoch=epoch+1,
+                                            batch=batch_idx+1,
+                                            save_results=True
+                                        )
+                            
+                            # Log sample tokens from batch (first example only) if in debug mode
+                            if config.debug_mode and batch_idx % 50 == 0:
+                                try:
+                                    # Get the first example from the batch
+                                    input_ids = batch['input_ids'][0].cpu().tolist()
+                                    input_text = tokenizer.decode(input_ids)
+                                    logger.info(f"Sample input: {input_text[:100]}...")
+                                except Exception as e:
+                                    logger.debug(f"Could not decode sample input: {e}")
                 
                         # Evaluate and save checkpoint
                         if global_step % config.eval_steps == 0:
-                            # Evaluate
-                            eval_loss = evaluate_model(model, eval_dataloader, device)
+                            # Evaluate with enhanced logging
+                            logger.info(f"\n{'-'*20} Evaluation at Step {global_step} {'-'*20}")
+                            eval_loss = evaluate_model(model, eval_dataloader, device, tokenizer, config)
                             val_losses.append(eval_loss)
                             train_losses.append(epoch_loss / (batch_idx + 1))
                             
-                            logger.info(f"Step {global_step}: Validation Loss: {eval_loss:.4f}")
+                            # Calculate and log training/validation loss difference
+                            train_loss = epoch_loss / (batch_idx + 1)
+                            loss_diff = train_loss - eval_loss
+                            logger.info(f"Step {global_step}: Train Loss: {train_loss:.4f}, Val Loss: {eval_loss:.4f}, Diff: {loss_diff:.4f}")
+                            logger.info(f"{'-'*65}\n")
+                            
+                            # Record evaluation metrics for visualization
+                            if config.enable_visualizations and visualizer:
+                                # Calculate precision (using 1 - eval_loss as a proxy for precision)
+                                # This is a simplified metric - in a real scenario, you might want to use
+                                # a more sophisticated precision calculation
+                                precision_proxy = max(0, min(1, 1 - eval_loss))
+                                
+                                visualizer.record_training_metrics(
+                                    phase=phase_idx+1,
+                                    epoch=epoch+1,
+                                    loss=train_loss,
+                                    precision=precision_proxy
+                                )
                             
                             # Check early stopping
                             if early_stopping(eval_loss, model, tokenizer, global_step):
@@ -777,28 +926,99 @@ def main():
                             tokenizer.save_pretrained(checkpoint_path)
                             logger.info(f"Regular checkpoint saved at {checkpoint_path}")
             
-                    # Calculate average epoch loss
+                    # Calculate and log detailed epoch statistics
                     avg_epoch_loss = epoch_loss / len(train_dataloader)
-                    logger.info(f"Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} completed. Average loss: {avg_epoch_loss:.4f}")
+                    epoch_time = time.time() - start_time
+                    examples_per_second = len(train_dataset) / epoch_time
                     
-                    # Evaluate at end of epoch
-                    eval_loss = evaluate_model(model, eval_dataloader, device)
+                    # Generate plots at specified epochs if configured
+                    if config.enable_visualizations and visualizer and epoch+1 in config.plot_at_epochs:
+                        epoch_suffix = f" (Phase {phase_idx+1}, Epoch {epoch+1})"
+                        logger.info(f"Generating plots at the end of epoch {epoch+1}...")
+                        visualizer.plot_loss_and_lr(title_suffix=epoch_suffix)
+                        visualizer.plot_precision_comparison(title_suffix=epoch_suffix)
+                        
+                        # Run translation tests at the same points as plot generation
+                        logger.info(f"Running translation tests at the end of epoch {epoch+1}...")
+                        test_translations(
+                            model=model,
+                            tokenizer=tokenizer,
+                            config=config,
+                            phase=phase_idx+1,
+                            epoch=epoch+1,
+                            save_results=True
+                        )
+                    
+                    logger.info(f"{'='*30} EPOCH SUMMARY {'='*30}")
+                    logger.info(f"Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} ({phase['name']}) completed")
+                    logger.info(f"Average loss: {avg_epoch_loss:.4f}")
+                    logger.info(f"Processing speed: {examples_per_second:.2f} examples/second")
+                    logger.info(f"Epoch duration: {epoch_time:.2f}s")
+                    logger.info(f"Current learning rate: {optimizer.param_groups[0]['lr']:.2e}")
+                    logger.info(f"{'='*75}")
+                    
+                    # Evaluate at end of epoch with enhanced logging
+                    logger.info(f"\n{'-'*20} End of Epoch {epoch+1} Evaluation {'-'*20}")
+                    eval_loss = evaluate_model(model, eval_dataloader, device, tokenizer, config)
                     val_losses.append(eval_loss)
                     train_losses.append(avg_epoch_loss)
                     
-                    logger.info(f"End of epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1}: Validation Loss: {eval_loss:.4f}")
+                    # Calculate and log training/validation loss difference
+                    loss_diff = avg_epoch_loss - eval_loss
+                    logger.info(f"End of epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1}:")
+                    logger.info(f"Train Loss: {avg_epoch_loss:.4f}, Val Loss: {eval_loss:.4f}, Diff: {loss_diff:.4f}")
+                    logger.info(f"{'-'*65}\n")
                     
                     # Check early stopping
                     if early_stopping(eval_loss, model, tokenizer, global_step):
                         logger.info("Early stopping triggered")
                         break
+                    
+                    # Run HellaSwag evaluation if configured
+                    if config.enable_hellaswag_eval and (epoch+1) in config.hellaswag_eval_epochs:
+                        logger.info(f"\n{'*'*30} Running HellaSwag Evaluation {'*'*30}")
+                        run_hellaswag_evaluation(
+                            model=model,
+                            tokenizer=tokenizer,
+                            config=config,
+                            epoch=epoch+1,
+                            phase=phase_idx+1,
+                            phase_name=phase['name']
+                        )
+                        logger.info(f"{'*'*80}\n")
+                        
+                        # Run translation tests at the same points as HellaSwag evaluation
+                        logger.info(f"Running translation tests after HellaSwag evaluation...")
+                        test_translations(
+                            model=model,
+                            tokenizer=tokenizer,
+                            config=config,
+                            phase=phase_idx+1,
+                            epoch=epoch+1,
+                            save_results=True
+                        )
         
                 except Exception as e:
                     logger.error(f"Error during phase {phase_idx+1} training: {e}")
                     raise
                     
-                # Phase completed
+                # Phase completed - log comprehensive phase summary
                 phase_time = time.time() - start_time
+                logger.info(f"\n{'#'*30} PHASE {phase_idx+1} SUMMARY {'#'*30}")
+                logger.info(f"Phase: {phase['name']}")
+                logger.info(f"Training examples: {len(phase_train_data)}")
+                logger.info(f"Learning rate: {phase['learning_rate']}")
+                logger.info(f"Epochs completed: {epoch+1}")
+                logger.info(f"Total phase duration: {phase_time:.2f}s")
+                logger.info(f"Average examples/second: {len(phase_train_data)*epoch/(phase_time):.2f}")
+                
+                # Log validation metrics
+                if val_losses:
+                    logger.info(f"Initial validation loss: {val_losses[0]:.4f}")
+                    logger.info(f"Final validation loss: {val_losses[-1]:.4f}")
+                    logger.info(f"Validation loss improvement: {val_losses[0] - val_losses[-1]:.4f} ({(val_losses[0] - val_losses[-1])/val_losses[0]*100:.2f}%)")
+                
+                logger.info(f"{'#'*80}\n")
                 logger.info(f"Phase {phase_idx+1} training completed in {phase_time:.2f} seconds")
                 
                 # Save phase checkpoint
@@ -812,7 +1032,49 @@ def main():
         total_time = time.time() - overall_start_time
         logger.info(f"All training phases completed in {total_time:.2f} seconds")
         
-        # Plot training metrics
+        # Generate final visualization plots if enabled
+        if config.enable_visualizations and visualizer and config.plot_at_end:
+            logger.info("Generating final visualization plots...")
+            
+            # Generate comprehensive plots with all training data
+            final_loss_chart = visualizer.plot_loss_and_lr(title_suffix=" (Final)")
+            final_precision_chart = visualizer.plot_precision_comparison(title_suffix=" (Final)")
+            
+            # Save all visualization data to JSON for future reference
+            loss_history_file, precision_history_file = visualizer.save_history_data()
+            
+            logger.info(f"Final loss and learning rate chart saved to {final_loss_chart}")
+            logger.info(f"Final precision comparison chart saved to {final_precision_chart}")
+            logger.info(f"Training history data saved to {loss_history_file} and {precision_history_file}")
+            
+            # Run final translation tests and save results
+            logger.info("Running final translation tests...")
+            final_translations = test_translations(
+                model=model,
+                tokenizer=tokenizer,
+                config=config,
+                save_results=True
+            )
+            
+            # Generate comprehensive training report with all metrics and visualizations
+            logger.info("Generating comprehensive training report...")
+            
+            # Get final metrics from the last evaluation
+            final_metrics = {
+                "Final Training Loss": train_losses[-1] if train_losses else None,
+                "Final Validation Loss": val_losses[-1] if val_losses else None,
+                "Training Time (seconds)": total_time,
+                "Total Phases": len(config.phases) if config.enable_multi_phase else 1
+            }
+            
+            # Generate the report with translation results
+            report_file = visualizer.generate_training_report(
+                final_metrics=final_metrics,
+                translation_results=final_translations
+            )
+            logger.info(f"Comprehensive training report generated at {report_file}")
+        
+        # Plot legacy training metrics
         plot_training_metrics(train_losses, val_losses, config.model_output_dir)
         
         # Save the trained model and tokenizer
@@ -836,29 +1098,215 @@ def main():
         
         # Test translations
         test_translations(model, tokenizer, config)
+        
+        # Run final HellaSwag evaluation
+        if config.enable_hellaswag_eval:
+            logger.info(f"\n{'*'*30} Running Final HellaSwag Evaluation {'*'*30}")
+            run_hellaswag_evaluation(
+                model=model,
+                tokenizer=tokenizer,
+                config=config
+            )
+            logger.info(f"{'*'*80}\n")
     except Exception as e:
         logger.error(f"Error during overall training process: {e}")
         raise
 
-def evaluate_model(model, eval_dataloader, device):
-    """Evaluate the model on validation data"""
+def evaluate_model(model, eval_dataloader, device, tokenizer=None, config=None):
+    """
+    Evaluate the model on validation data with enhanced metrics
+    
+    Args:
+        model: The model to evaluate
+        eval_dataloader: DataLoader containing evaluation data
+        device: Device to run evaluation on
+        tokenizer: Optional tokenizer for decoding samples
+        config: Optional configuration object
+        
+    Returns:
+        float: Average evaluation loss
+    """
     model.eval()
     total_eval_loss = 0
+    eval_steps = 0
+    start_time = time.time()
+    
+    # Initialize metrics collection
+    losses = []
     
     with torch.no_grad():
-        for batch in eval_dataloader:
+        for batch_idx, batch in enumerate(eval_dataloader):
             batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(**batch)
             loss = outputs.loss
+            
+            # Collect metrics
+            losses.append(loss.item())
             total_eval_loss += loss.item()
+            eval_steps += 1
+            
+            # Log sample evaluation if debug mode and tokenizer provided
+            if config and config.debug_mode and tokenizer and batch_idx == 0:
+                try:
+                    # Get a sample from the batch
+                    input_ids = batch['input_ids'][0].cpu().tolist()
+                    input_text = tokenizer.decode(input_ids)
+                    logger.info(f"Eval sample input: {input_text[:100]}...")
+                except Exception as e:
+                    logger.debug(f"Could not decode eval sample: {e}")
     
+    # Calculate metrics
     avg_eval_loss = total_eval_loss / len(eval_dataloader)
-    model.train()
+    eval_time = time.time() - start_time
+    examples_per_second = len(eval_dataloader) * eval_dataloader.batch_size / eval_time if hasattr(eval_dataloader, 'batch_size') else 0
+    
+    # Log detailed evaluation metrics
+    logger.info(f"Evaluation completed in {eval_time:.2f}s")
+    logger.info(f"Average evaluation loss: {avg_eval_loss:.4f}")
+    logger.info(f"Evaluation speed: {examples_per_second:.2f} examples/second")
+    
+    if losses:
+        # Calculate loss statistics
+        min_loss = min(losses)
+        max_loss = max(losses)
+        std_loss = np.std(losses) if len(losses) > 1 else 0
+        logger.info(f"Loss range: {min_loss:.4f} - {max_loss:.4f}, StdDev: {std_loss:.4f}")
+    
+    model.train()  # Set model back to training mode
     return avg_eval_loss
 
-def test_translations(model, tokenizer, config):
-    """Test the model with sample translations"""
-    logger.info("\n===== TESTING TRANSLATIONS =====")
+def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, phase_name=None):
+    """
+    Run HellaSwag evaluation on the current model
+    
+    Args:
+        model: The model to evaluate
+        tokenizer: The tokenizer to use
+        config: Configuration object
+        epoch: Current epoch number
+        phase: Current phase number
+        phase_name: Name of the current phase
+    
+    Returns:
+        dict: Evaluation metrics
+    """
+    # Path to the hellaswag_evaluation module in the new location
+    hellaswag_path = os.path.join(os.path.dirname(__file__), "hellaswag_test_results")
+    
+    # Add the hellaswag_path to sys.path if it's not already there
+    import sys
+    if hellaswag_path not in sys.path:
+        sys.path.append(hellaswag_path)
+    
+    # Check if hellaswag_evaluation module is available in the new location
+    hellaswag_file = os.path.join(hellaswag_path, "hellaswag_evaluation.py")
+    if not os.path.exists(hellaswag_file):
+        logger.warning(f"HellaSwag evaluation module not found at {hellaswag_file}. Skipping evaluation.")
+        return None
+    
+    try:
+        # Import the HellaSwag evaluator from the new location
+        sys.path.insert(0, hellaswag_path)  # Prioritize the new location
+        from hellaswag_evaluation import HellaSwagEvaluator
+        
+        # Create a unique model identifier
+        model_identifier = f"yanomami_phase{phase}_epoch{epoch}" if epoch and phase else "yanomami"
+        
+        # Log evaluation start
+        phase_info = f"epoch {epoch} of phase {phase} ({phase_name})" if epoch and phase and phase_name else "current state"
+        logger.info(f"\n{'='*40}\nStarting HellaSwag evaluation for model at {phase_info}\n{'='*40}")
+        
+        # Create a temporary directory to save the current model state
+        temp_model_dir = os.path.join("./temp_models", model_identifier)
+        os.makedirs(temp_model_dir, exist_ok=True)
+        
+        # Save the current model state
+        logger.info(f"Saving current model state to {temp_model_dir}")
+        model.save_pretrained(temp_model_dir)
+        tokenizer.save_pretrained(temp_model_dir)
+        
+        # Initialize the evaluator
+        evaluator = HellaSwagEvaluator(
+            model_path=temp_model_dir,
+            model_type="yanomami",
+            device=str(next(model.parameters()).device)
+        )
+        
+        # Run evaluation
+        logger.info(f"Evaluating on {config.hellaswag_num_examples} HellaSwag examples")
+        metrics = evaluator.evaluate(num_examples=config.hellaswag_num_examples)
+        
+        # Create results directory
+        results_dir = os.path.join(config.model_output_dir, "hellaswag_results")
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Compare with baselines if configured and generate comparison chart
+        comparison = None
+        if config.hellaswag_compare_baselines:
+            logger.info("Comparing with baseline models...")
+            comparison = evaluator.compare_with_baselines()
+            
+            # Generate and save comparison chart
+            chart_path = evaluator.plot_comparison_chart(
+                comparison=comparison,
+                output_dir=results_dir,
+                phase=phase,
+                epoch=epoch
+            )
+            logger.info(f"Comparison chart saved to: {chart_path}")
+        
+        # Save results with phase and epoch information
+        results_file = evaluator.save_results(
+            output_dir=results_dir,
+            phase=phase,
+            epoch=epoch
+        )
+        
+        # Log summary with visual separator
+        logger.info(f"\n{'*'*40}\nHellaSwag evaluation completed for {model_identifier}\n"
+                   f"Accuracy: {metrics['accuracy']:.4f}, Perplexity: {metrics['perplexity']:.4f}\n{'*'*40}")
+        
+        # Clean up temporary model directory if not in debug mode
+        if not config.debug_mode and os.path.exists(temp_model_dir):
+            try:
+                shutil.rmtree(temp_model_dir)
+                logger.debug(f"Removed temporary model directory: {temp_model_dir}")
+            except Exception as e:
+                logger.debug(f"Failed to remove temporary model directory: {e}")
+        
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Error during HellaSwag evaluation: {e}")
+        return None
+
+
+def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=None, save_results=False):
+    """
+    Test the model with sample translations
+    
+    Args:
+        model: The model to test
+        tokenizer: The tokenizer to use
+        config: Configuration object
+        phase (int, optional): Current training phase
+        epoch (int, optional): Current epoch number
+        batch (int, optional): Current batch number
+        save_results (bool): Whether to save results to a file
+    
+    Returns:
+        dict: Dictionary of test results if save_results is True, None otherwise
+    """
+    # Create a descriptive header based on when the test is being run
+    if phase is not None and epoch is not None:
+        if batch is not None:
+            test_header = f"\n===== TESTING TRANSLATIONS (Phase {phase}, Epoch {epoch}, Batch {batch}) ====="
+        else:
+            test_header = f"\n===== TESTING TRANSLATIONS (Phase {phase}, Epoch {epoch}) ====="
+    else:
+        test_header = "\n===== TESTING TRANSLATIONS (Final) ====="
+        
+    logger.info(test_header)
     
     test_phrases = [
         ("What does 'aheprariyo' mean in Yanomami?", "english_to_yanomami"),
@@ -873,7 +1321,51 @@ def test_translations(model, tokenizer, config):
         ("Kami yai huë", "yanomami_to_english")
     ]
     
+    # Initialize results dictionary if we're saving results
+    results = {}
+    if save_results:
+        results = {
+            "timestamp": datetime.now().isoformat(),
+            "phase": phase,
+            "epoch": epoch,
+            "batch": batch,
+            "translations": []
+        }
+    
     for phrase, direction in test_phrases:
         logger.info(f"\nInput ({direction}): {phrase}")
         translation = generate_translation(phrase, model, tokenizer, config, direction)
         logger.info(f"Translation: {translation}")
+        
+        if save_results:
+            results["translations"].append({
+                "input": phrase,
+                "direction": direction,
+                "output": translation
+            })
+    
+    # Save results to file if requested
+    if save_results and config.enable_visualizations:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create a descriptive filename
+        if phase is not None and epoch is not None:
+            if batch is not None:
+                filename = f"translations_p{phase}_e{epoch}_b{batch}_{timestamp}.json"
+            else:
+                filename = f"translations_p{phase}_e{epoch}_{timestamp}.json"
+        else:
+            filename = f"translations_final_{timestamp}.json"
+            
+        # Save to visualization directory
+        output_path = os.path.join(config.visualization_output_dir, filename)
+        os.makedirs(config.visualization_output_dir, exist_ok=True)
+        
+        with open(output_path, 'w') as f:
+            json.dump(results, f, indent=2)
+            
+        logger.info(f"Translation test results saved to {output_path}")
+        
+        return results
+    
+    return None

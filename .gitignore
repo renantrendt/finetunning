@@ -37,8 +37,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-.notes-dataset
-.questions
 
 # OS specific
 .DS_Store

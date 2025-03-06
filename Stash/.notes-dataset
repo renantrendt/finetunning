@@ -1,0 +1,120 @@
+
+Longer training in Phase 1
+Smaller learning rate at the start
+1. `loss_type=None` was set in the config but it is unrecognised.Using the default loss: `ForCausalLMLoss`.
+2. 2025-03-05 16:21:15.796 python[53983:1750626] +[IMKClient subclass]: chose IMKClient_Modern
+2025-03-05 16:21:15.796 python[53983:1750626] +[IMKInputSession subclass]: chose IMKInputSession_Modern
+3. insert log for each batch rather then 5 in 5
+4. insert more details at the log, like how long it take for each batch; learning rate, validation .
+Hellaswag?
+
+
+?. Needs to add different questions for the same word and phrases?
+
+~0. Prepared the dataset with special tokens to help fine tune
+~1. Substituir palavras com ∞h∞te para ihite qnd comparison and grammar finish: python /Users/renanserrano/CascadeProjects/Yanomami/finetunning/scripts_for_tokenizer/replace_infinity_with_i.py --dir /Users/renanserrano/CascadeProjects/Yanomami/AiDatasetGeneratorFineTunning/ai-dataset-generator/output/yanomami_dataset_with_tokens~
+~2. Duplicate the dataset without diacritical marks~
+~3. Created an Yanomami tokenizer to reduce the amount of tokens and precision in inference~
+~2. rodar os scripts p/ grammar verb & plural~
+~3. add os special tokens no tokenizer map~
+~4. roda o script do tokenizer~
+~4. Remember to resize the model's token embeddings when loading: from transformers import GPT2LMHeadModel, GPT2Tokenizer~
+~5. What do you think about Inserting hellaswag to evaluate along the tuning then plot a chart in the end to show the results compared to GPT2, 3 and 4~
+~6. Can we remove the option to have fallback for the default tokenizer? We do need to have the yanomami tokenizer and is better to halt rather then continue with the wrong tokenizer~
+
+
+Pós fine tuning:
+7. Run in a jupyter notebook before run live
+8. What do you think to create our own hellswag like?
+5. fine tuning com mais epocas: Verificar
+6. Post-process the output: Use the post-processing function I provided earlier to remove tags from the generated text.
+7. Rodar o script 8 a 12 do dataset na lista expandida de translations.
+7. Expansão de Vocabulário: Adicionar mais palavras e frases ao dataset - incluir múltiplas entradas com variações
+
+Para aumentar a exposição do modelo a cada palavra, você pode incluir múltiplas entradas com variações:
+
+Entradas Bidirecionais - Para melhorar a tradução em ambas as direções:
+
+
+Apos a resposta chegar, um agente vai conferir se a resposta bate com o dicionario e fica nesse loopp
+
+Melhorias no Sistema de Recuperação
+Embeddings Multilíngues: Usar modelos de embeddings especificamente treinados para lidar com múltiplas línguas
+Clustering: Agrupar entradas semanticamente similares para melhorar a recuperação
+Reranking: Implementar um sistema de reranking para refinar os resultados da busca
+
+Modificações no Código de Processamento
+Para implementar estas mudanças, você precisaria modificar a função prepare_data_for_training para processar os novos marcadores e metadados:
+
+
+python
+CopyInsert
+def prepare_data_for_training(examples):
+    processed_data = []
+    for example in examples:
+        # Verificar a estrutura do exemplo
+        if 'messages' in example:
+            english_text = None
+            yanomami_text = None
+            
+            for message in example['messages']:
+                if message['role'] == 'user' and 'content' in message:
+                    english_text = message['content']
+                elif message['role'] == 'assistant' and 'content' in message:
+                    yanomami_text = message['content']
+            
+            if english_text and yanomami_text:
+                # Extrair peso de importância se existir
+                weight = 1.0
+                if 'metadata' in example and 'importance_weight' in example['metadata']:
+                    weight = example['metadata']['importance_weight']
+                
+                # Repetir o exemplo conforme indicado
+                repetitions = 1
+                if 'metadata' in example and 'repetition_count' in example['metadata']:
+                    repetitions = example['metadata']['repetition_count']
+                
+                # Adicionar o exemplo o número especificado de vezes
+                for _ in range(repetitions):
+                    processed_data.append({
+                        "english": english_text, 
+                        "yanomami": yanomami_text,
+                        "weight": weight
+                    })
+    
+    return processed_data
+
+    E então modificar a função de tokenização para considerar os pesos:
+
+python
+CopyInsert
+def tokenize_function(examples, tokenizer, config):
+    # Inicializa listas para armazenar os dados processados
+    english_texts = examples['english']
+    yanomami_texts = examples['yanomami']
+    weights = examples.get('weight', [1.0] * len(english_texts))
+    
+    # Combina os textos para tokenização com marcadores especiais
+    combined_texts = []
+    for eng, yan in zip(english_texts, yanomami_texts):
+        # Remover marcadores existentes para processamento
+        yan_processed = yan
+        for tag in ['<WORD>', '</WORD>', '<POS>', '</POS>', '<DEFINITION>', '</DEFINITION>', 
+                    '<EXAMPLES>', '</EXAMPLES>', '<YANOMAMI>', '</YANOMAMI>', 
+                    '<TRANSLATION>', '</TRANSLATION>', '<RELATED_FORMS>', '</RELATED_FORMS>']:
+            yan_processed = yan_processed.replace(tag, '')
+        
+        combined_texts.append(f"English: {eng} => Yanomami: {yan_processed}")
+    
+    # Tokeniza os textos combinados
+    tokenized = tokenizer(
+        combined_texts, 
+        padding=config.padding, 
+        truncation=config.truncation, 
+        max_length=config.max_length
+    )
+    
+    # Adiciona os pesos ao resultado tokenizado
+    tokenized['weight'] = weights
+    
+    return tokenized

@@ -2,7 +2,8 @@
 ../../../*
 
 # Ignore large model files
-gpt2_yanomami_translator/model.safetensors
+*.safetensors
+*.faiss
 
 # Python
 __pycache__/
@@ -57,3 +58,7 @@ training.log
 
 # Checkpoints
 checkpoints/
+
+# Large data files
+RAG/
+test_checkpoints/

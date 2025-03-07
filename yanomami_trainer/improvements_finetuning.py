@@ -120,6 +120,7 @@ class TranslatorConfig:
         
         # Model settings
         self.model_name = "gpt2"
+        self.loss_type = 'ForCausalLMLoss'
         
         if self.is_lambda:
             # Use the current directory structure for all paths
@@ -222,6 +223,9 @@ class TranslatorConfig:
                 'num_epochs': 8
             }
         ]
+        
+        # Add this line to define the attribute
+        self.test_translations_every_epoch = True 
 
 # Helper function
 def load_jsonl(file_path):
@@ -800,6 +804,11 @@ def load_yanomami_translator(model_path):
 
 # Main function to run
 def main():
+    # Initialize variables
+    writer = None
+    start_time = time.time()
+    global_step = 0
+    
     # Initialize configuration
     config = TranslatorConfig()
     
@@ -1039,6 +1048,7 @@ def main():
                     lr=phase['learning_rate'], 
                     eps=config.adam_epsilon
                 )
+                logger.info(f"Configured optimizer with learning rate: {phase['learning_rate']} for {total_steps} total training steps.")
                 
                 # Configure scheduler
                 # Ensure optimizer has non-zero learning rate before creating scheduler
@@ -1093,7 +1103,14 @@ def main():
                 
                 try:
                     for epoch in range(phase['num_epochs']):
-                        logger.info(f"Starting epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1}")
+                        logger.info(f"Starting epoch {epoch + 1}/{phase['num_epochs']} of phase {phase_idx + 1}")
+                        
+                        # Log training mode at the start of the epoch
+                        if config.use_mixed_precision and torch.cuda.is_available():
+                            logger.info("Using mixed precision training.")
+                        else:
+                            logger.info("Using standard training.")
+                        
                         epoch_loss = 0
                         model.train()
                 
@@ -1130,7 +1147,7 @@ def main():
                                     lr_after = optimizer.param_groups[0]['lr']
                                     
                                     # Log if learning rate changed
-                                    if batch_idx % 5 == 0 or abs(lr_before - lr_after) > 1e-8:
+                                    if abs(lr_before - lr_after) > 1e-8:
                                         logger.info(f"Learning rate change (mixed precision): {lr_before:.8f} -> {lr_after:.8f} (diff: {lr_after - lr_before:.8f})")
                                     
                                     optimizer.zero_grad()
@@ -1155,21 +1172,23 @@ def main():
                                     lr_after = optimizer.param_groups[0]['lr']
                                     
                                     # Log if learning rate changed
-                                    if batch_idx % 5 == 0 or abs(lr_before - lr_after) > 1e-8:
+                                    if abs(lr_before - lr_after) > 1e-8:
                                         logger.info(f"Learning rate change: {lr_before:.8f} -> {lr_after:.8f} (diff: {lr_after - lr_before:.8f})")
                                     
                                     optimizer.zero_grad()
                                     global_step += 1
                 
-                        # Accumulate loss
-                        epoch_loss += loss.item() * config.gradient_accumulation_steps
-                        
-                        # Log progress with enhanced batch information
-                        if batch_idx % 10 == 0:
-                            progress_percent = (batch_idx + 1) / total_batches * 100
-                            remaining_batches = total_batches - batch_idx - 1
-                            elapsed_time = time.time() - start_time
-                            
+                                # Accumulate loss
+                                epoch_loss += loss.item() * config.gradient_accumulation_steps
+                                
+                                # Calculate progress metrics
+                                progress_percent = (batch_idx + 1) / total_batches * 100
+                                remaining_batches = total_batches - batch_idx - 1
+                                elapsed_time = time.time() - start_time
+                                
+                                # Initialize time_per_batch to avoid referencing it before assignment
+                                time_per_batch = 0
+                                
                             # Calculate estimated time remaining
                             if batch_idx > 0:
                                 time_per_batch = elapsed_time / (batch_idx + 1)
@@ -1177,35 +1196,26 @@ def main():
                                 eta_str = f", ETA: {estimated_time_remaining:.2f}s"
                             else:
                                 eta_str = ""
-                            
-                            # Get current learning rate and log it in detail
+
+                            # Get current learning rate
                             current_lr = optimizer.param_groups[0]['lr']
-                            
-                            # Log detailed learning rate information every 10 batches
-                            if batch_idx % 10 == 0:
-                                logger.info(f"Current learning rate: {current_lr:.8f}")
-                                
-                                # If learning rate is 0 or very small, log a warning
-                                if current_lr < 1e-8:
-                                    logger.warning(f"Learning rate is very low: {current_lr:.8e}. This may prevent effective training.")
-                            
+
                             # Get memory usage if CUDA is available
                             mem_str = ""
                             if torch.cuda.is_available():
                                 mem_allocated = torch.cuda.memory_allocated() / 1024**2  # MB
                                 mem_reserved = torch.cuda.memory_reserved() / 1024**2    # MB
-                                mem_str = f", GPU Mem: {mem_allocated:.1f}MB/{mem_reserved:.1f}MB"
-                            
-                            # Log detailed batch information
+                                mem_str = f", GPU: {mem_allocated:.0f}MB/{mem_reserved:.0f}MB"
+
+                            # Log detailed batch information (every batch)
                             logger.info(
-                                f"Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} ({phase['name']}), "
-                                f"Batch {batch_idx+1}/{total_batches} ({progress_percent:.2f}%), "
-                                f"Loss: {loss.item()*config.gradient_accumulation_steps:.4f}, "
-                                f"LR: {current_lr:.2e}, "
-                                f"Elapsed: {elapsed_time:.2f}s{eta_str}{mem_str}"
+                                f"Phase {phase_idx+1}, Epoch {epoch+1}/{phase['num_epochs']}, "
+                                f"Batch {batch_idx+1}/{total_batches} ({progress_percent:.1f}%) | "
+                                f"Loss: {loss.item()*config.gradient_accumulation_steps:.4f} | "
+                                f"LR: {current_lr:.2e} | "
+                                f"Time/batch: {time_per_batch:.2f}s{eta_str}{mem_str}"
                             )
-                            
-                            # Record metrics for visualization if enabled
+
                             if config.enable_visualizations and visualizer:
                                 batch_loss = loss.item() * config.gradient_accumulation_steps
                                 visualizer.record_training_metrics(
@@ -1215,26 +1225,26 @@ def main():
                                     loss=batch_loss,
                                     learning_rate=current_lr
                                 )
-                                
-                                # Generate plots at specified batch intervals if configured
-                                if config.plot_batch_interval > 0 and batch_idx % config.plot_batch_interval == 0 and batch_idx > 0:
-                                    batch_suffix = f" (Phase {phase_idx+1}, Epoch {epoch+1}, Batch {batch_idx+1})"
-                                    visualizer.plot_loss_and_lr(title_suffix=batch_suffix)
-                                    
-                                    # Run translation tests at batch intervals
-                                    # Only do this occasionally to avoid slowing down training too much
-                                    if batch_idx % (config.plot_batch_interval * 2) == 0:
-                                        logger.info(f"Running quick translation test at batch {batch_idx+1}...")
-                                        test_translations(
-                                            model=model,
-                                            tokenizer=tokenizer,
-                                            config=config,
-                                            phase=phase_idx+1,
-                                            epoch=epoch+1,
-                                            batch=batch_idx+1,
-                                            save_results=True
-                                        )
                             
+                            # Generate plots at specified batch intervals if configured
+                            if config.plot_batch_interval > 0 and batch_idx % config.plot_batch_interval == 0 and batch_idx > 0:
+                                batch_suffix = f" (Phase {phase_idx+1}, Epoch {epoch+1}, Batch {batch_idx+1})"
+                                visualizer.plot_loss_and_lr(title_suffix=batch_suffix)
+                                
+                                # Run translation tests at batch intervals
+                                # Only do this occasionally to avoid slowing down training too much
+                                if batch_idx % (config.plot_batch_interval * 2) == 0:
+                                    logger.info(f"Running quick translation test at batch {batch_idx+1}...")
+                                    test_translations(
+                                        model=model,
+                                        tokenizer=tokenizer,
+                                        config=config,
+                                        phase=phase_idx+1,
+                                        epoch=epoch+1,
+                                        batch=batch_idx+1,
+                                        save_results=True
+                                    )
+                                    
                             # Log sample tokens from batch (first example only) if in debug mode
                             if config.debug_mode and batch_idx % 50 == 0:
                                 try:
@@ -1244,7 +1254,7 @@ def main():
                                     logger.info(f"Sample input: {input_text[:100]}...")
                                 except Exception as e:
                                     logger.debug(f"Could not decode sample input: {e}")
-                
+                    
                         # Calculate and log average loss for the epoch
                         avg_epoch_loss = epoch_loss / total_batches
                         logger.info(f"\n{'-'*20} Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} ({phase['name']}) completed {'-'*20}")
@@ -1707,14 +1717,16 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_length=64,
+                    max_length=150,  # Increase this value to allow for more output
                     min_length=1,
                     num_return_sequences=1,
                     temperature=0.7,
+                    top_p=0.9,
                     do_sample=True,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
-                    bos_token_id=tokenizer.bos_token_id
+                    bos_token_id=tokenizer.bos_token_id,
+                    max_new_tokens=50  # Alternatively, specify how many new tokens to generate
                 )
                 
             # Decode and log output

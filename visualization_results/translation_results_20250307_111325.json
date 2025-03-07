@@ -1,0 +1,24 @@
+{
+  "translations": [
+    {
+      "input": "Hello",
+      "direction": "english_to_yanomami",
+      "output": "Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello"
+    },
+    {
+      "input": "How are you?",
+      "direction": "english_to_yanomami",
+      "output": "How is your life How do you feel How are you feeling How"
+    },
+    {
+      "input": "Hapai kua?",
+      "direction": "yanomami_to_english",
+      "output": "Hapai Hapai Hapai etheless Hapai Hapai Hapai Hapai Hapai etheless Hapai Hapai Hapai H"
+    }
+  ],
+  "timestamp": "2025-03-07T11:13:25.516401",
+  "phase": 1,
+  "epoch": 1,
+  "model_device": "mps:0",
+  "tokenizer_size": 77049
+}

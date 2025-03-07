@@ -223,7 +223,7 @@ class TranslatorConfig:
             }
         ]
 
-# Helper functions
+# Helper function
 def load_jsonl(file_path):
     data = []
     with open(file_path, 'r', encoding='utf-8') as f:
@@ -231,56 +231,7 @@ def load_jsonl(file_path):
             data.append(json.loads(line))
     return data
 
-# Processes raw examples from the dataset and transforms them into structured input-output pairs
-# for different types of linguistic queries including translations, definitions, usage examples,
-# comparisons, pluralization, and verb conjugation
-def prepare_data_for_training(examples):
-    processed_data = []
-    for example in examples:
-        for example in examples:
-            # Check example structure
-            if 'messages' in example and len(example['messages']) >= 2:
-                user_message = example['messages'][0]
-                assistant_message = example['messages'][1]
-
-                if user_message['role'] == 'user' and assistant_message['role'] == 'assistant':
-                    input_text = user_message['content']
-                    output_text = assistant_message['content']
-
-                    # Determine if this is English-to-Yanomami or Yanomami-to-English
-                    if 'translate' in input_text.lower() and 'yanomami' in input_text.lower():
-                        processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
-                    elif 'translate' in input_text.lower() and 'english' in input_text.lower():
-                        processed_data.append({"input": f"Yanomami: {input_text} => English:", "output": output_text})
-                    elif 'mean' in input_text.lower() and 'yanomami' in input_text.lower():
-                        processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
-                    elif 'how do I use' in input_text.lower() or 'use the word' in input_text.lower():
-                        # Handle usage example queries
-                        word = extract_word_from_query(input_text)  # Implement this function to extract the word
-                        usage_example = get_usage_example(word)  # Implement this function to retrieve usage examples
-                        processed_data.append({"input": f"Usage of {word}:", "output": usage_example})
-                    elif 'difference between' in input_text.lower():
-                        # Handle comparison queries
-                        words = extract_words_from_comparison(input_text)  # Implement this function to extract words
-                        comparison_info = get_comparison_info(words)  # Implement this function to retrieve comparison information
-                        processed_data.append({"input": f"Comparison between {words[0]} and {words[1]}:", "output": comparison_info})
-                    elif 'how is the plural of' in input_text.lower():
-                        # Handle pluralization queries
-                        word = extract_word_from_query(input_text)
-                        plural_form = get_plural_form(word)  # Implement this function to retrieve plural forms
-                        processed_data.append({"input": f"Plural of {word}:", "output": plural_form})
-                    elif 'how is the verb' in input_text.lower():
-                        # Handle verb conjugation queries
-                        verb = extract_word_from_query(input_text)
-                        conjugation_info = get_conjugation_info(verb)  # Implement this function to retrieve conjugation information
-                        processed_data.append({"input": f"Conjugation of {verb}:", "output": conjugation_info})
-                    else:
-                        # Default case - assume English-to-Yanomami
-                        processed_data.append({"input": f"English: {input_text} => Yanomami:", "output": output_text})
-    
-    return processed_data
-
-# Helper function for tokenization to eliminate duplicate code
+# Helper function for tokenization
 def tokenize_text(text, tokenizer, config):
     try:
         tokens = tokenizer(
@@ -294,6 +245,188 @@ def tokenize_text(text, tokenizer, config):
     except Exception as e:
         logger.error(f"Error tokenizing text: {e}")
         return None
+
+# Helper function to prepare tokenized datasets
+def prepare_tokenized_dataset(examples, tokenizer, config):
+    tokenized_data = []
+    
+    # Process each example individually to avoid batch errors
+    for example in examples:
+        try:
+            # Combine input and output for training
+            combined_text = f"{example['input']} {example['output']}"
+            
+            # Tokenize the text
+            try:
+                tokens = tokenize_text(combined_text, tokenizer, config)
+                
+                # Add to tokenized data
+                tokenized_data.append({
+                    "input_ids": tokens["input_ids"][0],  # Remove batch dimension
+                    "attention_mask": tokens["attention_mask"][0]  # Remove batch dimension
+                })
+                
+            except Exception as e:
+                logger.warning(f"Error tokenizing text: {str(e)}. Using dummy tokens.")
+                # Use dummy tokens if tokenization fails
+                tokenized_data.append({
+                    "input_ids": torch.tensor([0, 0]),
+                    "attention_mask": torch.tensor([1, 1])
+                })
+                
+        except Exception as e:
+            logger.warning(f"Error processing example: {str(e)}. Skipping.")
+    
+    logger.info(f"Prepared {len(tokenized_data)} tokenized examples out of {len(examples)} total examples")
+    return tokenized_data
+
+# Helper functions for text extraction and processing
+def extract_word_from_query(query):
+    """Extract the main word from a query about usage, pluralization, or verb conjugation.
+    The word is expected to be marked with <WORD> tags in the dataset.
+    """
+    # Look for word in <WORD> tags
+    import re
+    word_pattern = r'<WORD>([^<]+)</WORD>'
+    matches = re.findall(word_pattern, query)
+    
+    if matches:
+        # Return the first word found in <WORD> tags
+        return matches[0].strip()
+    
+    # Fallback: try to find word after common phrases (for robustness)
+    query_lower = query.lower()
+    for phrase in ['use the word', 'how do I use', 'plural of', 'how is the plural of', 'the verb', 'how is the verb']:
+        if phrase in query_lower:
+            phrase_index = query_lower.find(phrase)
+            remaining_text = query[phrase_index + len(phrase):].strip()
+            if remaining_text:
+                return remaining_text.split()[0].strip('?.,"\'')
+    
+    # Last resort fallback - return the last word
+    words = query.split()
+    if words:
+        return words[-1].strip('?.,"\'')
+    
+    return "unknown"
+
+def extract_words_from_comparison(query):
+    """Extract the words being compared from a query.
+    The words are expected to be marked with <WORD> tags in the dataset.
+    """
+    # Look for words in <WORD> tags
+    import re
+    word_pattern = r'<WORD>([^<]+)</WORD>'
+    matches = re.findall(word_pattern, query)
+    
+    if len(matches) >= 2:
+        # Return the first two words found in <WORD> tags
+        return [matches[0].strip(), matches[1].strip()]
+    
+    # Fallback: try to extract from "difference between X and Y" pattern
+    query_lower = query.lower()
+    if 'difference between' in query_lower:
+        after_phrase = query_lower.split('difference between')[1].strip()
+        if ' and ' in after_phrase:
+            parts = after_phrase.split(' and ')
+            return [parts[0].strip(), parts[1].split('?')[0].strip()]
+    
+    return ["word1", "word2"]
+
+def get_usage_example(word):
+    """Get usage examples for a word"""
+    return f"Here are some examples of how to use '{word}' in Yanomami."
+
+def get_comparison_info(words):
+    """Get comparison information for words"""
+    return f"The difference between '{words[0]}' and '{words[1]}' in Yanomami is..."
+
+def get_plural_form(word):
+    """Get plural form of a word"""
+    return f"The plural form of '{word}' in Yanomami is..."
+
+def get_conjugation_info(verb):
+    """Get conjugation information for a verb"""
+    return f"The conjugation of the verb '{verb}' in Yanomami is..."
+
+# Processes raw examples from the dataset and transforms them into structured input-output pairs
+# for different types of linguistic queries including translations, definitions, usage examples,
+# comparisons, pluralization, and verb conjugation
+def prepare_data_for_training(examples):
+    processed_data = []
+    for example in examples:  # Only one loop needed
+        # Check example structure
+        if 'messages' in example and len(example['messages']) >= 2:
+            user_message = example['messages'][0]
+            assistant_message = example['messages'][1]
+
+            if user_message['role'] == 'user' and assistant_message['role'] == 'assistant':
+                input_text = user_message['content']
+                output_text = assistant_message['content']
+
+                # Extract XML-like query type if present
+                query_type = None
+                if '<QUERY>' in input_text:
+                    import re
+                    query_match = re.search(r'<QUERY>(.*?)</QUERY>', input_text)
+                    if query_match:
+                        input_text = query_match.group(1)
+
+                # Determine query type and process accordingly
+                input_lower = input_text.lower()
+                
+                if 'translate' in input_lower and 'yanomami' in input_lower:
+                    processed_data.append({
+                        "input": f"English: {input_text} => Yanomami:",
+                        "output": output_text
+                    })
+                elif 'translate' in input_lower and 'english' in input_lower:
+                    processed_data.append({
+                        "input": f"Yanomami: {input_text} => English:",
+                        "output": output_text
+                    })
+                elif 'mean' in input_lower and 'yanomami' in input_lower:
+                    processed_data.append({
+                        "input": f"English: {input_text} => Yanomami:",
+                        "output": output_text
+                    })
+                elif 'how do i use' in input_lower or 'use the word' in input_lower:
+                    # Handle usage example queries - extract word from <WORD> tags
+                    word = extract_word_from_query(input_text)
+                    # Preserve the structured format from the dataset
+                    processed_data.append({
+                        "input": f"Usage of <WORD>{word}</WORD>:",
+                        "output": output_text  # Use actual response instead of placeholder
+                    })
+                elif 'difference between' in input_lower:
+                    # Handle comparison queries - extract both words from <WORD> tags
+                    words = extract_words_from_comparison(input_text)
+                    processed_data.append({
+                        "input": f"Compare <WORD>{words[0]}</WORD> and <WORD>{words[1]}</WORD>:",
+                        "output": output_text  # Use actual response instead of placeholder
+                    })
+                elif 'how is the plural of' in input_lower:
+                    # Handle pluralization queries
+                    word = extract_word_from_query(input_text)
+                    processed_data.append({
+                        "input": f"Plural of <WORD>{word}</WORD>:",
+                        "output": output_text  # Use actual response instead of placeholder
+                    })
+                elif 'how is the verb' in input_lower:
+                    # Handle verb conjugation queries
+                    verb = extract_word_from_query(input_text)
+                    processed_data.append({
+                        "input": f"Conjugate verb <WORD>{verb}</WORD>:",
+                        "output": output_text  # Use actual response instead of placeholder
+                    })
+                else:
+                    # Default case - preserve any XML tags in the input
+                    processed_data.append({
+                        "input": f"English: {input_text} => Yanomami:",
+                        "output": output_text
+                    })
+    
+    return processed_data
 
 # Converts text examples into token IDs using the enhanced tokenizer, combining input and output texts
 # for language modeling training with proper error handling for robust processing
@@ -665,7 +798,7 @@ def load_yanomami_translator(model_path):
     
     return model, tokenizer
 
-# Main function to run the quick test
+# Main function to run
 def main():
     # Initialize configuration
     config = TranslatorConfig()
@@ -771,17 +904,9 @@ def main():
     
     # Create a validation set from all data
     # We'll use 10% of all data for validation
-    train_data_all, val_data = train_test_split(flattened_data, test_size=0.1, random_state=42)
+    val_data = train_test_split(flattened_data, test_size=0.1, random_state=42)[1]  # Only keep the validation split
     logger.info(f"Total training examples (all phases): {len(flattened_data) - len(val_data)}")
     logger.info(f"Validation examples: {len(val_data)}")
-    
-    # Create datasets
-    train_dataset = Dataset.from_list(train_data_all)
-    val_dataset = Dataset.from_list(val_data)
-    
-    # Load model and tokenizer
-    # Ensure the output directory exists
-    os.makedirs(config.model_output_dir, exist_ok=True)
     
     # First, load the Yanomami-specific tokenizer
     logger.info("Loading Yanomami-specific tokenizer")
@@ -790,10 +915,6 @@ def main():
     if os.path.exists(yanomami_tokenizer_path):
         logger.info(f"Loading Yanomami-specific tokenizer from {yanomami_tokenizer_path}")
         tokenizer = load_enhanced_tokenizer(yanomami_tokenizer_path)
-        
-        # Enhance the tokenizer with special character handling for Yanomami
-        logger.info("Enhancing tokenizer with special character handling for Yanomami")
-        tokenizer = enhance_tokenizer(tokenizer)
     else:
         # Halt execution if Yanomami tokenizer is not available
         error_msg = f"ERROR: Yanomami-specific tokenizer not found at {yanomami_tokenizer_path}"
@@ -812,7 +933,7 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
     
     # Configure device
-    device = get_device(log_info=False)
+    device = get_device(log_info=True)
     logger.info(f"Using device: {device}")
     model.to(device)
     
@@ -821,37 +942,10 @@ def main():
     
     # Prepare validation dataset once (used across all phases)
     logger.info("Preparing validation dataset...")
-    
+
     # Create a new dataset with the required columns for validation
-    tokenized_val_data = []
-    
-    # Process each validation example individually
-    for example in val_data:
-        try:
-            # Combine input and output for training
-            combined_text = f"{example['input']} {example['output']}"
-            
-            # Tokenize the text
-            try:
-                tokens = tokenize_text(combined_text, tokenizer, config)
-                
-                # Add to tokenized data
-                tokenized_val_data.append({
-                    "input_ids": tokens["input_ids"][0],  # Remove batch dimension
-                    "attention_mask": tokens["attention_mask"][0]  # Remove batch dimension
-                })
-                
-            except Exception as e:
-                logger.warning(f"Error tokenizing validation text: {str(e)}. Using dummy tokens.")
-                # Use dummy tokens if tokenization fails
-                tokenized_val_data.append({
-                    "input_ids": torch.tensor([0, 0]),
-                    "attention_mask": torch.tensor([1, 1])
-                })
-                
-        except Exception as e:
-            logger.warning(f"Error processing validation example: {str(e)}. Skipping.")
-    
+    tokenized_val_data = prepare_tokenized_dataset(val_data, tokenizer, config)
+
     # Create a new dataset from the tokenized validation data
     if tokenized_val_data:
         tokenized_val = Dataset.from_list(tokenized_val_data)
@@ -895,41 +989,11 @@ def main():
                 phase_train_data = get_phase_dataset(phase, all_train_data)
                 logger.info(f"Phase {phase_idx+1} ({phase['name']}) training on {len(phase_train_data)} examples")
                 
-                # Create dataset for this phase
-                phase_train_dataset = Dataset.from_list(phase_train_data)
-                
                 # Tokenize datasets for this phase
                 logger.info(f"Tokenizing phase {phase_idx+1} dataset...")
                 
                 # Create a new dataset with the required columns
-                tokenized_data = []
-                
-                # Process each example individually to avoid batch errors
-                for example in phase_train_data:
-                    try:
-                        # Combine input and output for training
-                        combined_text = f"{example['input']} {example['output']}"
-                        
-                        # Tokenize the text
-                        try:
-                            tokens = tokenize_text(combined_text, tokenizer, config)
-                            
-                            # Add to tokenized data
-                            tokenized_data.append({
-                                "input_ids": tokens["input_ids"][0],  # Remove batch dimension
-                                "attention_mask": tokens["attention_mask"][0]  # Remove batch dimension
-                            })
-                            
-                        except Exception as e:
-                            logger.warning(f"Error tokenizing text: {str(e)}. Using dummy tokens.")
-                            # Use dummy tokens if tokenization fails
-                            tokenized_data.append({
-                                "input_ids": torch.tensor([0, 0]),
-                                "attention_mask": torch.tensor([1, 1])
-                            })
-                            
-                    except Exception as e:
-                        logger.warning(f"Error processing example: {str(e)}. Skipping.")
+                tokenized_data = prepare_tokenized_dataset(phase_train_data, tokenizer, config)
                 
                 # Create a new dataset from the tokenized data
                 if tokenized_data:
@@ -1181,16 +1245,43 @@ def main():
                                 except Exception as e:
                                     logger.debug(f"Could not decode sample input: {e}")
                 
+                        # Calculate and log average loss for the epoch
+                        avg_epoch_loss = epoch_loss / total_batches
+                        logger.info(f"\n{'-'*20} Epoch {epoch+1}/{phase['num_epochs']} of phase {phase_idx+1} ({phase['name']}) completed {'-'*20}")
+                        logger.info(f"Average training loss: {avg_epoch_loss:.4f}")
+                        
+                        # Log to tensorboard if available
+                        if writer:
+                            writer.add_scalar(f"Loss/train/phase_{phase_idx+1}", avg_epoch_loss, epoch)
+                        
+                        # Evaluate on validation set at the end of each epoch
+                        logger.info(f"Evaluating on validation set at the end of epoch {epoch+1}...")
+                        epoch_eval_loss = evaluate_model(model, eval_dataloader, device, tokenizer, config)
+                        logger.info(f"Validation loss: {epoch_eval_loss:.4f}")
+                        logger.info(f"{'-'*80}\n")
+                        
+                        # Test translations at the end of each epoch
+                        if config.test_translations_every_epoch:
+                            logger.info(f"Running translation tests at the end of epoch {epoch+1}...")
+                            test_translations(
+                                model=model,
+                                tokenizer=tokenizer,
+                                config=config,
+                                phase=phase_idx+1,
+                                epoch=epoch+1,
+                                save_results=True
+                            )
+                        
                         # Evaluate and save checkpoint
                         if global_step % config.eval_steps == 0:
                             # Evaluate with enhanced logging
                             logger.info(f"\n{'-'*20} Evaluation at Step {global_step} {'-'*20}")
                             eval_loss = evaluate_model(model, eval_dataloader, device, tokenizer, config)
                             val_losses.append(eval_loss)
-                            train_losses.append(epoch_loss / (batch_idx + 1))
+                            train_losses.append(avg_epoch_loss)
                             
                             # Calculate and log training/validation loss difference
-                            train_loss = epoch_loss / (batch_idx + 1)
+                            train_loss = avg_epoch_loss
                             loss_diff = train_loss - eval_loss
                             logger.info(f"Step {global_step}: Train Loss: {train_loss:.4f}, Val Loss: {eval_loss:.4f}, Diff: {loss_diff:.4f}")
                             logger.info(f"{'-'*65}\n")
@@ -1460,20 +1551,6 @@ def evaluate_model(model, eval_dataloader, device, tokenizer=None, config=None):
     return avg_eval_loss
 
 def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, phase_name=None):
-    """
-    Run HellaSwag evaluation on the current model
-    
-    Args:
-        model: The model to evaluate
-        tokenizer: The tokenizer to use
-        config: Configuration object
-        epoch: Current epoch number
-        phase: Current phase number
-        phase_name: Name of the current phase
-    
-    Returns:
-        dict: Evaluation metrics
-    """
     # Path to the hellaswag_evaluation module in the new location
     hellaswag_path = os.path.join(os.path.dirname(__file__), "yanomami_trainer")
     
@@ -1566,21 +1643,6 @@ def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, p
 
 
 def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=None, save_results=False):
-    """
-    Test the model with sample translations
-    
-    Args:
-        model: The model to test
-        tokenizer: The tokenizer to use
-        config: Configuration object
-        phase (int, optional): Current training phase
-        epoch (int, optional): Current epoch number
-        batch (int, optional): Current batch number
-        save_results (bool): Whether to save results to a file
-    
-    Returns:
-        dict: Dictionary of test results if save_results is True, None otherwise
-    """
     logger = logging.getLogger(__name__)
     
     # Create a descriptive header

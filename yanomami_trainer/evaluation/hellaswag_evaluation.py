@@ -18,18 +18,11 @@ matplotlib.use('Agg')  # Use non-interactive backend
 from datasets import load_dataset
 from transformers import (
     GPT2LMHeadModel,
-    GPT2Tokenizer,
-    GPT2Config,
-    AutoModelForCausalLM,
-    AutoTokenizer
 )
 
 # Import the tokenizer enhancement module
 from yanomami_tokenizer.tokenizer_enhancement import (
-    enhance_tokenizer,
-    load_enhanced_tokenizer,
-    SPECIAL_CHAR_WORDS,
-    replace_special_chars
+    load_enhanced_tokenizer
 )
 
 # Configure logging
@@ -118,7 +111,7 @@ class HellaSwagEvaluator:
             logger.info(f"Loading baseline model: {model_name}")
             
             try:
-                tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+                tokenizer = load_enhanced_tokenizer(model_name)
                 model = GPT2LMHeadModel.from_pretrained(model_name)
                 model.to(self.device)
                 model.eval()

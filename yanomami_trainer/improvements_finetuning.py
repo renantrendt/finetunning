@@ -36,9 +36,48 @@ from yanomami_trainer.visualization_utils import TrainingVisualizer
 
 # Import the tokenizer enhancement module
 from yanomami_tokenizer.tokenizer_enhancement import (
-    enhance_tokenizer,
+    # enhance_tokenizer,
     load_enhanced_tokenizer
 )
+
+# Lambda Cloud environment detection
+def is_running_on_lambda():
+    """Detect if code is running on Lambda Cloud"""
+    # Check for Lambda environment variable (existing method)
+    if os.environ.get("YANOMAMI_LAMBDA_TRAINING", "0") == "1":
+        return True
+    
+    # Check for Lambda-specific environment variables
+    if 'LAMBDA_TASK_ROOT' in os.environ or 'LAMBDA_RUNTIME_DIR' in os.environ:
+        return True
+    
+    # Check for Lambda-specific system characteristics
+    try:
+        with open('/etc/os-release', 'r') as f:
+            os_info = f.read()
+            if 'lambda' in os_info.lower():
+                return True
+    except:
+        pass
+    
+    return False
+
+# GH200 detection function
+def is_gh200_gpu():
+    """Detect if running on GH200 Superchip"""
+    if not torch.cuda.is_available():
+        return False
+    
+    # Check for high memory (GH200 has very large memory)
+    try:
+        if torch.cuda.get_device_properties(0).total_memory > 100e9:  # >100GB suggests GH200
+            return True
+        
+        # Check device name for GH200 identifiers
+        device_name = torch.cuda.get_device_name(0).lower()
+        return 'gh200' in device_name or 'grace hopper' in device_name
+    except:
+        return False
 
 # Configure enhanced logging with timestamps and detailed formatting
 log_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -104,7 +143,7 @@ class TranslatorConfig:
         
         # Data settings
         # Check if running on Lambda Cloud
-        self.is_lambda = os.environ.get("YANOMAMI_LAMBDA_TRAINING", "0") == "1"
+        self.is_lambda = is_running_on_lambda()
         
         if self.is_lambda:
             # Use the current directory structure or environment variable
@@ -821,6 +860,38 @@ def main():
     # Initialize configuration
     config = TranslatorConfig()
     
+    # Check for GH200 GPU when running on Lambda
+    if config.is_lambda:
+        logger.info("Running on Lambda Cloud with optimized settings")
+        
+        # Check for GH200 GPU
+        if is_gh200_gpu():
+            logger.info("Detected GH200 Superchip - applying specialized optimizations")
+            
+            # Optimize configuration for GH200 on Lambda
+            config.use_mixed_precision = True
+            logger.info("Enabled mixed precision training for GH200")
+            
+            # Lambda GH200 instances have high memory - optimize batch size
+            if hasattr(config, 'batch_size') and config.batch_size < 32:
+                original_batch_size = config.batch_size
+                config.batch_size = min(32, config.batch_size * 2)  # Double batch size but cap at 32
+                logger.info(f"GH200: Increased batch size from {original_batch_size} to {config.batch_size}")
+            
+            # Optimize gradient accumulation for high memory
+            if hasattr(config, 'gradient_accumulation_steps') and config.gradient_accumulation_steps > 1:
+                original_grad_accum = config.gradient_accumulation_steps
+                config.gradient_accumulation_steps = 1  # GH200 has enough memory to avoid gradient accumulation
+                logger.info(f"GH200: Reduced gradient accumulation steps from {original_grad_accum} to 1")
+            
+            # Optimize memory allocation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("Cleared CUDA cache for optimal memory usage")
+            
+            # Log GH200-specific GPU info
+            logger.info(f"GH200 GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    
     # Create output directories
     os.makedirs(config.model_output_dir, exist_ok=True)
     os.makedirs(config.checkpoint_dir, exist_ok=True)
@@ -977,10 +1048,35 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         logger.info("Set padding token to EOS token")
     
+    # GH200 Superchip Optimizations
+    # Enable mixed precision training to utilize Tensor Cores efficiently
+    config.use_mixed_precision = True
+    logger.info(f"Mixed precision training enabled: {config.use_mixed_precision}")
+    
+    # Check for multi-GPU setup
+    if torch.cuda.device_count() > 1:
+        logger.info(f"Using {torch.cuda.device_count()} GPUs for distributed training")
+        model = torch.nn.DataParallel(model)
+    
     # Configure device
     device = get_device(log_info=True)
     logger.info(f"Using device: {device}")
     model.to(device)
+    
+    # GH200-specific memory optimizations
+    if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory > 40e9:  # Check if we have a high-memory GPU (>40GB)
+        logger.info("Detected high-memory GPU, optimizing memory usage for GH200")
+        # Increase batch size if we have more memory available
+        if hasattr(config, 'batch_size') and config.batch_size < 16:
+            original_batch_size = config.batch_size
+            config.batch_size = min(16, config.batch_size * 2)  # Double batch size but cap at 16
+            logger.info(f"Increased batch size from {original_batch_size} to {config.batch_size} for high-memory GPU")
+        
+        # Reduce gradient accumulation steps if we have a larger batch size
+        if hasattr(config, 'gradient_accumulation_steps') and config.gradient_accumulation_steps > 4:
+            original_grad_accum = config.gradient_accumulation_steps
+            config.gradient_accumulation_steps = max(4, config.gradient_accumulation_steps // 2)
+            logger.info(f"Reduced gradient accumulation steps from {original_grad_accum} to {config.gradient_accumulation_steps}")
     
     # Store original processed data for phases
     all_train_data = all_processed_data
@@ -1146,6 +1242,11 @@ def main():
                             logger.info("Using mixed precision training.")
                         else:
                             logger.info("Using standard training.")
+                            
+                        # Log GPU memory usage at the start of each epoch (useful for GH200)
+                        if torch.cuda.is_available():
+                            logger.info(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                            logger.info(f"GPU memory reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
                         
                         epoch_loss = 0
                         model.train()
@@ -1769,13 +1870,12 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
                     outputs = model.generate(
                         **inputs,
                         forced_bos_token_id=forced_bos_token_id,
-                        max_length=150,
+                        max_new_tokens=150,
                         min_length=1,
                         num_return_sequences=1,
                         temperature=0.7,
                         top_p=0.9,
-                        do_sample=True,
-                        # max_new_tokens=150
+                        do_sample=True
                     )
             else:
                 # Original GPT-2 approach with instruction format
@@ -1809,7 +1909,7 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_length=150,
+                        max_new_tokens=150,
                         min_length=1,
                         num_return_sequences=1,
                         temperature=0.7,
@@ -1817,8 +1917,7 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
                         do_sample=True,
                         pad_token_id=tokenizer.pad_token_id,
                         eos_token_id=tokenizer.eos_token_id,
-                        bos_token_id=tokenizer.bos_token_id,
-                        max_new_tokens=150
+                        bos_token_id=tokenizer.bos_token_id
                     )
             
             # Decode and log output based on model type

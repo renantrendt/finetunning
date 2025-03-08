@@ -16,10 +16,12 @@ import difflib
 import unicodedata
 from datetime import datetime
 from transformers import (
-    GPT2LMHeadModel, 
+    AutoModelForSeq2SeqLM, 
     AdamW, 
     get_linear_schedule_with_warmup,
-    get_cosine_schedule_with_warmup
+    get_cosine_schedule_with_warmup,
+    AutoTokenizer,
+    M2M100ForConditionalGeneration
 )
 from datasets import Dataset
 from torch.utils.data import DataLoader, Dataset as TorchDataset
@@ -119,8 +121,15 @@ class TranslatorConfig:
         logging.info(f"Found {len(self.dataset_files)} dataset files in {self.dataset_path}")
         
         # Model settings
-        self.model_name = "gpt2"
-        self.loss_type = 'ForCausalLMLoss'
+        self.model_name = "facebook/m2m100_418M"  # Using the distilled 600M parameter version of NLLB
+        self.model_type = "m2m100"  # Add model type to distinguish between different architectures
+        self.loss_type = 'CrossEntropyLoss'  # Appropriate loss for seq2seq models
+        
+        # Source and target language codes for NLLB
+        # NLLB uses specific language codes - 'eng_Latn' for English
+        # For Yanomami, we'll use a close proxy or add it as a new language
+        self.source_lang = "eng_Latn"  # English in Latin script
+        self.target_lang = "eng_Latn" 
         
         if self.is_lambda:
             # Use the current directory structure for all paths
@@ -792,7 +801,7 @@ def load_yanomami_translator(model_path):
     tokenizer = load_enhanced_tokenizer(model_path)
     
     # Load the model
-    model = GPT2LMHeadModel.from_pretrained(model_path)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
     
     # Configure device for inference
     device = get_device(log_info=False)
@@ -918,28 +927,55 @@ def main():
     logger.info(f"Validation examples: {len(val_data)}")
     
     # First, load the Yanomami-specific tokenizer
-    logger.info("Loading Yanomami-specific tokenizer")
+    logger.info("Loading tokenizer")
     yanomami_tokenizer_path = './yanomami_tokenizer/complete_yanomami_tokenizer'
     
-    if os.path.exists(yanomami_tokenizer_path):
-        logger.info(f"Loading Yanomami-specific tokenizer from {yanomami_tokenizer_path}")
-        tokenizer = load_enhanced_tokenizer(yanomami_tokenizer_path)
+    # Check if we should use NLLB tokenizer or custom Yanomami tokenizer
+    if config.model_type == "nllb":
+        logger.info(f"Using NLLB tokenizer for {config.model_name}")
+        # Load NLLB tokenizer using AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        
+        # Set source and target language
+        tokenizer.src_lang = config.source_lang
+        tokenizer.tgt_lang = config.target_lang
+        
+        logger.info(f"NLLB tokenizer vocabulary size: {len(tokenizer)}")
+        logger.info(f"Source language: {config.source_lang}, Target language: {config.target_lang}")
     else:
-        # Halt execution if Yanomami tokenizer is not available
-        error_msg = f"ERROR: Yanomami-specific tokenizer not found at {yanomami_tokenizer_path}"
-        logger.error(error_msg)
-        raise FileNotFoundError(error_msg)
+        # Original code for custom Yanomami tokenizer
+        if os.path.exists(yanomami_tokenizer_path):
+            logger.info(f"Loading Yanomami-specific tokenizer from {yanomami_tokenizer_path}")
+            tokenizer = load_enhanced_tokenizer(yanomami_tokenizer_path)
+        else:
+            # Halt execution if tokenizer is not available
+            error_msg = f"ERROR: Yanomami-specific tokenizer not found at {yanomami_tokenizer_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
     
     # Now load or initialize the model
     logger.info("Loading or initializing model")
-    model = GPT2LMHeadModel.from_pretrained(config.model_name)
+    if config.model_type == "nllb":
+        logger.info(f"Using NLLB model: {config.model_name}")
+        model = M2M100ForConditionalGeneration.from_pretrained(config.model_name)
+        
+        # For NLLB, we don't need to resize token embeddings as it already has a comprehensive vocabulary
+        logger.info(f"NLLB model loaded with {model.get_input_embeddings().num_embeddings} embeddings")
+    else:
+        # Original code for loading other models
+        model = AutoModelForSeq2SeqLM.from_pretrained(config.model_name)
+        
+        # Resize token embeddings to match the tokenizer vocabulary size
+        logger.info(f"Resizing token embeddings from {model.get_input_embeddings().num_embeddings} to {len(tokenizer)}")
+        model.resize_token_embeddings(len(tokenizer))
     
-    # Resize token embeddings to match the tokenizer vocabulary size
-    logger.info(f"Resizing token embeddings from {model.get_input_embeddings().num_embeddings} to {len(tokenizer)}")
-    model.resize_token_embeddings(len(tokenizer))
-    
-    # Set padding token
-    tokenizer.pad_token = tokenizer.eos_token
+    # Set padding token if needed
+    if config.model_type == "nllb":
+        logger.info("NLLB tokenizer already has padding token configured")
+    else:
+        # For other models
+        tokenizer.pad_token = tokenizer.eos_token
+        logger.info("Set padding token to EOS token")
     
     # Configure device
     device = get_device(log_info=True)
@@ -1685,63 +1721,135 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
             
             logger.info(f"\n{'-'*30}\nTesting: {test_phrase} ({direction})\n{'-'*30}")
             
-            # Create the prompt based on direction
-            if direction == "english_to_yanomami":
-                prompt = (
-                    "You are a Yanomami language translator.\n"
-                    "Translate the following English text to Yanomami accurately:\n\n"
-                    f"English: {test_phrase}\n\n"
-                    "Yanomami: "
-                )
-            else:  # yanomami_to_english
-                logger.info(f"Using Yanomami-to-English translation direction for text: '{test_phrase[:30]}...'")
-                prompt = (
-                    "You are a Yanomami language translator.\n"
-                    "Translate the following Yanomami text to English accurately:\n\n"
-                    f"Yanomami: {test_phrase}\n\n"
-                    "English: "
-                )
-            
-            # Log the prompt
-            logger.info(f"\nUsing prompt:\n{prompt}")
-            
-            # Tokenize and log input
-            inputs = tokenize_text(prompt, tokenizer, config)
-            
-            # Move to device
+            # Get device
             device = next(model.parameters()).device
-            inputs = {k: v.to(device) for k, v in inputs.items()}
             
-            # Generate with simplified parameters
-            model.eval()
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_length=150,  # Increase this value to allow for more output
-                    min_length=1,
-                    num_return_sequences=1,
-                    temperature=0.7,
-                    top_p=0.9,
-                    do_sample=True,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    bos_token_id=tokenizer.bos_token_id,
-                    max_new_tokens=50  # Alternatively, specify how many new tokens to generate
-                )
+            # Handle differently based on model type
+            if config.model_type == "nllb":
+                # For NLLB models, we use language codes instead of prompts
+                if direction == "english_to_yanomami":
+                    # Set source language to English and target to proxy language
+                    src_lang = config.source_lang  # English
+                    tgt_lang = config.target_lang  # Proxy for Yanomami
+                    
+                    # Log what we're doing
+                    logger.info(f"Using NLLB model for English-to-Yanomami translation")
+                    logger.info(f"Source language: {src_lang}, Target language: {tgt_lang}")
+                    
+                    # No prompt needed, just the text
+                    prompt = test_phrase
+                else:  # yanomami_to_english
+                    # Swap source and target languages
+                    src_lang = config.target_lang  # Proxy for Yanomami
+                    tgt_lang = config.source_lang  # English
+                    
+                    logger.info(f"Using NLLB model for Yanomami-to-English translation")
+                    logger.info(f"Source language: {src_lang}, Target language: {tgt_lang}")
+                    
+                    # No prompt needed, just the text
+                    prompt = test_phrase
                 
-            # Decode and log output
-            output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            logger.info(f"\nRaw output:\n{output_text}")
+                # Tokenize for NLLB
+                logger.info(f"Tokenizing with source language: {src_lang}")
+                inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, src_lang=src_lang)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                
+                # Generate translation with NLLB
+                model.eval()
+                with torch.no_grad():
+                    # Check if the tokenizer has the necessary attributes
+                    if hasattr(tokenizer, 'lang_code_to_id'):
+                        forced_bos_token_id = tokenizer.lang_code_to_id[tgt_lang]
+                        logger.info(f"Using forced_bos_token_id: {forced_bos_token_id} for language {tgt_lang}")
+                    else:
+                        # Some models use a different approach
+                        forced_bos_token_id = None
+                        logger.info("No lang_code_to_id found in tokenizer, not using forced_bos_token_id")
+                    
+                    outputs = model.generate(
+                        **inputs,
+                        forced_bos_token_id=forced_bos_token_id,
+                        max_length=150,
+                        min_length=1,
+                        num_return_sequences=1,
+                        temperature=0.7,
+                        top_p=0.9,
+                        do_sample=True,
+                        # max_new_tokens=150
+                    )
+            else:
+                # Original GPT-2 approach with instruction format
+                if direction == "english_to_yanomami":
+                    prompt = (
+                        "You are a Yanomami language translator.\n"
+                        "Translate the following English text to Yanomami accurately:\n\n"
+                        f"English: {test_phrase}\n\n"
+                        "Yanomami: "
+                    )
+                else:  # yanomami_to_english
+                    logger.info(f"Using Yanomami-to-English translation direction for text: '{test_phrase[:30]}...'")
+                    prompt = (
+                        "You are a Yanomami language translator.\n"
+                        "Translate the following Yanomami text to English accurately:\n\n"
+                        f"Yanomami: {test_phrase}\n\n"
+                        "English: "
+                    )
+                
+                # Log the prompt
+                logger.info(f"\nUsing prompt:\n{prompt}")
+                
+                # Tokenize and log input
+                inputs = tokenize_text(prompt, tokenizer, config)
+                
+                # Move to device
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                
+                # Generate with simplified parameters
+                model.eval()
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_length=150,
+                        min_length=1,
+                        num_return_sequences=1,
+                        temperature=0.7,
+                        top_p=0.9,
+                        do_sample=True,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                        bos_token_id=tokenizer.bos_token_id,
+                        max_new_tokens=150
+                    )
             
-            # Clean output
-            translation = clean_translation_output(output_text, direction)
-            logger.info(f"\nCleaned translation:\n{translation}")
+            # Decode and log output based on model type
+            if config.model_type == "nllb":
+                # For NLLB, we need to specify the target language when decoding
+                decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=False)
+                
+                # Log raw input and output
+                logger.info(f"\nRAW INPUT (with special tokens):\n{tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=False)}")
+                logger.info(f"\nRAW MODEL OUTPUT (with special tokens):\n{decoded_output}")
+                
+                # Clean output
+                cleaned_output = decoded_output.strip()
+                logger.info(f"\nCleaned output:\n{cleaned_output}")
+            else:
+                # Original decoding for other models
+                decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=False)
+                
+                # Log raw input and output
+                logger.info(f"\nRAW INPUT (with special tokens):\n{tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=False)}")
+                logger.info(f"\nRAW MODEL OUTPUT (with special tokens):\n{decoded_output}")
+                
+                # Clean output
+                cleaned_output = decoded_output.replace(tokenizer.pad_token, "").replace(tokenizer.eos_token, "").strip()
+                logger.info(f"\nCleaned output:\n{cleaned_output}")
             
             # Store result for this test case
             result = {
                 "input": test_phrase,
                 "direction": direction,
-                "output": translation
+                "output": cleaned_output
             }
             
             # Add to all results

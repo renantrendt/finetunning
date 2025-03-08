@@ -62,6 +62,7 @@ enhanced_yanomami_translator/
 logs/
 visualization_results/*
 yanomami_translator_model/
+path/
 
 # Large data files
 RAG/

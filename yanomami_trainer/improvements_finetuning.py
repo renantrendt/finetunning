@@ -27,7 +27,8 @@ from datasets import Dataset
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 from sklearn.model_selection import train_test_split
 import logging
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast  # Updated import path
+from torch.cuda.amp import GradScaler
 import matplotlib.pyplot as plt
 from pathlib import Path
 import glob
@@ -145,16 +146,16 @@ class TranslatorConfig:
         # Check if running on Lambda Cloud
         self.is_lambda = is_running_on_lambda()
         
-        if self.is_lambda:
-            # Use the current directory structure or environment variable
-            current_dir = os.getcwd()
-            self.dataset_path = os.environ.get("YANOMAMI_DATASET_DIR", os.path.join(current_dir, "yanomami_dataset"))
-            # Ensure path ends with a slash
-            if not self.dataset_path.endswith('/'):
-                self.dataset_path += '/'
-            logging.info(f"Using dataset path: {self.dataset_path}")
-        else:
-            self.dataset_path = '/Users/renanserrano/CascadeProjects/Yanomami/finetunning/yanomami_dataset/'
+        # Use the current directory structure or environment variable for all environments
+        current_dir = os.getcwd()
+        self.dataset_path = os.environ.get("YANOMAMI_DATASET_DIR", os.path.join(current_dir, "yanomami_dataset"))
+        # Ensure path ends with a slash
+        if not self.dataset_path.endswith('/'):
+            self.dataset_path += '/'
+        logging.info(f"Using dataset path: {self.dataset_path}")
+        
+        # Logging configuration
+        self.logging_steps = 1  
             
         self.dataset_files = glob.glob(os.path.join(self.dataset_path, '*.jsonl'))
         logging.info(f"Found {len(self.dataset_files)} dataset files in {self.dataset_path}")
@@ -170,25 +171,21 @@ class TranslatorConfig:
         self.source_lang = "eng_Latn"  # English in Latin script
         self.target_lang = "eng_Latn" 
         
-        if self.is_lambda:
-            # Use the current directory structure for all paths
-            current_dir = os.getcwd()
-            self.model_output_dir = os.environ.get("YANOMAMI_MODEL_OUTPUT_DIR", os.path.join(current_dir, "enhanced_yanomami_translator"))
-            self.checkpoint_dir = os.environ.get("YANOMAMI_CHECKPOINT_DIR", os.path.join(current_dir, "checkpoints"))
-            self.log_dir = os.environ.get("YANOMAMI_LOG_DIR", os.path.join(current_dir, "logs"))
-            self.visualization_output_dir = os.environ.get("YANOMAMI_VISUALIZATION_DIR", os.path.join(current_dir, "visualization_results"))
-            
-            # Log the paths being used
-            logging.info(f"Using model output directory: {self.model_output_dir}")
-            logging.info(f"Using checkpoint directory: {self.checkpoint_dir}")
-        else:
-            self.model_output_dir = "./enhanced_yanomami_translator"
-            self.checkpoint_dir = "./checkpoints"
+        # Use the current directory structure for all paths in all environments
+        current_dir = os.getcwd()
+        self.model_output_dir = os.environ.get("YANOMAMI_MODEL_OUTPUT_DIR", os.path.join(current_dir, "enhanced_yanomami_translator"))
+        self.checkpoint_dir = os.environ.get("YANOMAMI_CHECKPOINT_DIR", os.path.join(current_dir, "checkpoints"))
+        self.log_dir = os.environ.get("YANOMAMI_LOG_DIR", os.path.join(current_dir, "logs"))
+        self.visualization_output_dir = os.environ.get("YANOMAMI_VISUALIZATION_DIR", os.path.join(current_dir, "visualization_results"))
+        
+        # Log the paths being used
+        logging.info(f"Using model output directory: {self.model_output_dir}")
+        logging.info(f"Using checkpoint directory: {self.checkpoint_dir}")
         
         # Training hyperparameters
-        self.num_epochs = 5
-        self.batch_size = 4
-        self.gradient_accumulation_steps = 8  # Effective batch size = batch_size * gradient_accumulation_steps
+        self.num_epochs = 10
+        self.batch_size = 32
+        self.gradient_accumulation_steps = 4  # Effective batch size = batch_size * gradient_accumulation_steps
         self.learning_rate = 5e-5
         self.warmup_ratio = 0.1
         self.max_grad_norm = 1.0
@@ -277,10 +274,32 @@ class TranslatorConfig:
 
 # Helper function
 def load_jsonl(file_path):
+    import unicodedata
     data = []
-    with open(file_path, 'r', encoding='utf-8') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
-            data.append(json.loads(line))
+            try:
+                # Normalize Unicode before parsing JSON
+                normalized_line = unicodedata.normalize('NFC', line)
+                example = json.loads(normalized_line)
+                
+                # Normalize all string values in the example recursively
+                def normalize_strings(obj):
+                    if isinstance(obj, str):
+                        return unicodedata.normalize('NFC', obj)
+                    elif isinstance(obj, dict):
+                        return {k: normalize_strings(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [normalize_strings(item) for item in obj]
+                    else:
+                        return obj
+                
+                # Apply normalization to the entire example
+                normalized_example = normalize_strings(example)
+                data.append(normalized_example)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Error decoding JSON in {file_path}: {str(e)}")
+                continue
     return data
 
 # Helper function for tokenization
@@ -682,7 +701,7 @@ def generate_translation(text, model, tokenizer, config, prefix_type="english_to
     try:
         outputs = model.generate(
             **inputs,
-            max_length=512,  # Shorter for testing
+            max_new_tokens=300,  
             min_length=1,   # Allow any length output
             num_return_sequences=1,
             temperature=0.7,
@@ -999,7 +1018,8 @@ def main():
     
     # First, load the Yanomami-specific tokenizer
     logger.info("Loading tokenizer")
-    yanomami_tokenizer_path = './yanomami_tokenizer/complete_yanomami_tokenizer'
+    current_dir = os.getcwd()
+    yanomami_tokenizer_path = os.path.join(current_dir, 'yanomami_tokenizer/complete_yanomami_tokenizer')
     
     # Check if we should use NLLB tokenizer or custom Yanomami tokenizer
     if config.model_type == "nllb":
@@ -1258,10 +1278,44 @@ def main():
                         for batch_idx, batch in enumerate(train_dataloader):
                             # Move batch to device
                             batch = {k: v.to(device) for k, v in batch.items()}
+                            
+                            # Log training examples in this batch (first example only to avoid excessive logging)
+                            if batch_idx % config.logging_steps == 0:
+                                try:
+                                    # Decode the first example in the batch with improved Unicode handling
+                                    input_ids = batch['input_ids'][0].cpu().numpy()
+                                    decoded_text = tokenizer.decode(input_ids, skip_special_tokens=True)
+                                    
+                                    # Normalize Unicode for consistent representation
+                                    import unicodedata
+                                    normalized_text = unicodedata.normalize('NFC', decoded_text)
+                                    
+                                    # Log both the raw and normalized text for comparison
+                                    logger.info(f"Batch {batch_idx} training example (normalized): {normalized_text}")
+                                    
+                                    # Log character codes for debugging encoding issues
+                                    char_codes = ', '.join([f"{c}({ord(c):04x})" for c in normalized_text[:20]])
+                                    logger.info(f"Character codes (first 20): {char_codes}")
+                                    
+                                    # Find and log special characters that might cause issues
+                                    special_chars = []
+                                    for i, c in enumerate(normalized_text):
+                                        # Check for non-ASCII characters or characters that might be problematic
+                                        if ord(c) > 127 or c in '<>[](){}\"\'':
+                                            context = normalized_text[max(0, i-10):min(len(normalized_text), i+10)]
+                                            special_chars.append(f"{c}({ord(c):04x}) at position {i} in context: ...{context}...")
+                                    
+                                    if special_chars:
+                                        logger.info(f"Special characters found: {len(special_chars)}")
+                                        for i, char_info in enumerate(special_chars):  # Limit to first 5 to avoid excessive logging
+                                            logger.info(f"Special char {i+1}: {char_info}")
+                                except Exception as e:
+                                    logger.warning(f"Could not decode training example: {str(e)}")
+
                 
                             # Mixed precision training
                             if config.use_mixed_precision and torch.cuda.is_available():
-                                with autocast():
+                                with autocast(device_type='cuda'):
                                     outputs = model(**batch)
                                     loss = outputs.loss / config.gradient_accumulation_steps
                             
@@ -1299,6 +1353,21 @@ def main():
                                 if (batch_idx + 1) % config.gradient_accumulation_steps == 0 or batch_idx == len(train_dataloader) - 1:
                                     # Clip gradients
                                     torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                                    
+                                    # Log gradient information for a few parameters (every 10 batches)
+                                    if batch_idx % 10 == 0:
+                                        grad_norms = {}
+                                        for name, param in model.named_parameters():
+                                            if param.grad is not None:
+                                                # Only log a subset of parameters to avoid excessive output
+                                                if 'layer.0' in name or 'layer.11' in name or 'layer.23' in name:
+                                                    grad_norms[name] = torch.norm(param.grad).item()
+                                        
+                                        # Log the top 5 largest gradients
+                                        sorted_grads = sorted(grad_norms.items(), key=lambda x: x[1], reverse=True)[:5]
+                                        logger.info(f"Top 5 gradient norms at batch {batch_idx}:")
+                                        for param_name, norm in sorted_grads:
+                                            logger.info(f"  {param_name}: {norm:.6f}")
                                 
                                     # Update weights
                                     optimizer.step()
@@ -1317,14 +1386,14 @@ def main():
                 
                                 # Accumulate loss
                                 epoch_loss += loss.item() * config.gradient_accumulation_steps
-                                
-                                # Calculate progress metrics
-                                progress_percent = (batch_idx + 1) / total_batches * 100
-                                remaining_batches = total_batches - batch_idx - 1
-                                elapsed_time = time.time() - start_time
-                                
-                                # Initialize time_per_batch to avoid referencing it before assignment
-                                time_per_batch = 0
+                            
+                            # Calculate progress metrics
+                            progress_percent = (batch_idx + 1) / total_batches * 100
+                            remaining_batches = total_batches - batch_idx - 1
+                            elapsed_time = time.time() - start_time
+                            
+                            # Initialize time_per_batch outside the conditional block
+                            time_per_batch = 0
                                 
                             # Calculate estimated time remaining
                             if batch_idx > 0:
@@ -1343,6 +1412,9 @@ def main():
                                 mem_allocated = torch.cuda.memory_allocated() / 1024**2  # MB
                                 mem_reserved = torch.cuda.memory_reserved() / 1024**2    # MB
                                 mem_str = f", GPU: {mem_allocated:.0f}MB/{mem_reserved:.0f}MB"
+                            
+                            # Calculate progress percentage
+                            progress_percent = 100.0 * (batch_idx + 1) / total_batches
 
                             # Log detailed batch information (every batch)
                             logger.info(
@@ -1699,7 +1771,7 @@ def evaluate_model(model, eval_dataloader, device, tokenizer=None, config=None):
 
 def run_hellaswag_evaluation(model, tokenizer, config, epoch=None, phase=None, phase_name=None):
     # Path to the hellaswag_evaluation module in the new location
-    hellaswag_path = os.path.join(os.path.dirname(__file__), "yanomami_trainer")
+    hellaswag_path = os.path.join(os.path.dirname(__file__), "evaluation")
     
     # Add the hellaswag_path to sys.path if it's not already there
     import sys
@@ -1870,7 +1942,7 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
                     outputs = model.generate(
                         **inputs,
                         forced_bos_token_id=forced_bos_token_id,
-                        max_new_tokens=150,
+                        max_new_tokens=300,
                         min_length=1,
                         num_return_sequences=1,
                         temperature=0.7,
@@ -1909,7 +1981,7 @@ def test_translations(model, tokenizer, config, phase=None, epoch=None, batch=No
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=150,
+                        max_new_tokens=300,
                         min_length=1,
                         num_return_sequences=1,
                         temperature=0.7,

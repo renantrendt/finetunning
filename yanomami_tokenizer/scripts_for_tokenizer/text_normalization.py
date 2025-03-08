@@ -159,10 +159,10 @@ def normalize_query(query, mapping=None):
 
 def main():
     # Path to the dataset directory
-    dataset_dir = "/Users/renanserrano/CascadeProjects/Yanomami/finetunning/yanomami_dataset"
+    dataset_dir = "yanomami_dataset"
     
     # Path to save the mapping
-    output_file = "/Users/renanserrano/CascadeProjects/Yanomami/finetunning/diacritic_mapping.json"
+    output_file = "diacritic_mapping.json"
     
     # Build the mapping
     mapping = build_diacritic_mapping(dataset_dir)
